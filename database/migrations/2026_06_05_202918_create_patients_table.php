@@ -12,7 +12,14 @@ return new class extends Migration
     public function up(): void
     {
         Schema::create('patients', function (Blueprint $table) {
-            $table->id();
+            $table->uuid('id')->primary();
+            $table->foreignUuid('clinic_id')->constrained()->cascadeOnDelete();
+            $table->string('name');
+            $table->string('email')->nullable();
+            $table->string('phone');
+            $table->date('date_of_birth')->nullable();
+            $table->enum('gender', ['male', 'female']);
+            $table->text('address')->nullable();
             $table->timestamps();
         });
     }
