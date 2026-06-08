@@ -10,8 +10,7 @@
         "laravel/framework": "^13.8",
         "laravel/passport": "^13.7",
         "laravel/tinker": "^3.0",
-        "php-open-source-saver/jwt-auth": "^2.9",
-        "tymon/jwt-auth": "^2.3"
+        "php-open-source-saver/jwt-auth": "^2.9"
     },
     "require-dev": {
         "barryvdh/laravel-ide-helper": "^3.7",
