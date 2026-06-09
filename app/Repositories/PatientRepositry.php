@@ -1,7 +1,7 @@
 <?php
 namespace App\Repositories;
 use App\Models\Patient;
-class PatientRepositry
+class PatientRepository
 {
     public function getAllPatients($clinicId = null)
     {
@@ -49,5 +49,11 @@ class PatientRepositry
         $patient = $query->where('id', $id)->firstOrFail($id);
         $patient->delete();
         return true;
+    }
+    public function allForClinic(int $clinicId, ?string $search = null)
+    {
+        return Patient::where('clinic_id', $clinicId)
+            ->when($search, fn($q) => $q->where('name', 'like', "%$search%"))
+            ->get();
     }
 }

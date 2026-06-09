@@ -3,7 +3,7 @@ namespace App\Repositories;
 use App\Models\Clinic;
 use App\Models\User;
 
-class ClinicRepositry
+class ClinicRepository
 {
     public function getAllClinics($clinicId = null)
     {

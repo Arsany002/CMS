@@ -4,7 +4,8 @@ namespace App\Services;
 
 use App\Enums\AppointmentStatus;
 use App\Models\Appointment;
-use App\Repositories\AppointmentRepositry;
+use App\Repositories\AppointmentRepository;
+use App\Repositories\AppointmentRepostory;
 use App\Repositories\ScheduleRepository;
 use Carbon\Carbon;
 use Illuminate\Support\Facades\Cache;
@@ -13,7 +14,7 @@ use Illuminate\Validation\ValidationException;
 class AppointmentService
 {
     public function __construct(
-        private AppointmentRepositry $appointmentRepo,
+        private AppointmentRepository $appointmentRepo,
         private ScheduleRepository $scheduleRepo,
     ) {}
 

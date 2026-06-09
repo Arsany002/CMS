@@ -3,7 +3,7 @@ namespace App\Repositories;
 use App\Models\Appointment;
 use Illuminate\Pagination\LengthAwarePaginator;
 
-class AppointmentRepositry
+class AppointmentRepository
 {
     public function allForDoctor(int $doctorId, array $filters = [], int $perPage = 15): LengthAwarePaginator
     {
