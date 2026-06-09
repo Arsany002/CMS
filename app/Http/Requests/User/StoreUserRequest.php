@@ -23,6 +23,12 @@ class StoreUserRequest extends FormRequest
     public function rules(): array
     {
         return [
+            'clinic_id' => 'required|exists:clinics,id',
+            'name' => 'required|string|max:255',
+            'email' => 'required|email|max:255|unique:users,email',
+            'password' => 'required|string|min:8|confirmed',
+            'phone' => 'nullable|string|max:20',
+            'role' => 'required|in:admin,doctor,patient',
             //
         ];
     }

@@ -23,7 +23,15 @@ class StorePrescriptionRequest extends FormRequest
     public function rules(): array
     {
         return [
-            //
+            'appointment_id' => 'required|exists:appointments,id',
+            'diagnosis' => 'required|string|max:1000',
+            'notes' => 'nullable|string|max:1000',
+            'items' => 'required|array|min:1',
+            'items.*.medicine_name' => 'required|string|max:255',
+            'items.*.dosage' => 'required|string|max:255',
+            'items.*.frequency' => 'required|string|max:255',
+            'items.*.duration' => 'required|string|max:255',
+            'items.*.notes' => 'nullable|string|max:1000',
         ];
     }
 }

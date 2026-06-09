@@ -23,7 +23,14 @@ class StorePatientRequest extends FormRequest
     public function rules(): array
     {
         return [
-            //
+            'name' => 'required|string|max:255',
+            'phone' => 'nullable|string|max:20',
+            'email' => 'nullable|email|max:255|unique:patients,email',
+            'date_of_birth' => 'nullable|date',
+            'gender' => 'required|in:([Gender::MALE->value, Gender::FEMALE->value])',
+            'address' => 'nullable|string|max:500',
+             
+            
         ];
     }
 }

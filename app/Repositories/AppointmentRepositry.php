@@ -69,4 +69,12 @@ class AppointmentRepositry
             ->when($excludeId, fn($q) => $q->where('id', '!=', $excludeId))
             ->exists();
     }
+    public function getBookedTimeSlots(int $doctorId, string $date): array
+    {
+        return Appointment::where('doctor_id', $doctorId)
+            ->whereDate('appointment_date', $date)
+            ->where('status', '!=', 'cancelled') // Ignore cancelled appointments
+            ->pluck('start_time')
+            ->toArray();
+    }
 }
