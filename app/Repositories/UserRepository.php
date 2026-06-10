@@ -13,12 +13,19 @@ class UserRepository
     }
     public function getUserById($id, $clinicId = null)
     {
-        $query = User::query();
+        $query = User::query()->where('id', $id);
+
         if ($clinicId !== null) {
-            $query->where('clinic_id', $clinicId)
-                    ->where('id', $id);
+            $query->where('clinic_id', $clinicId);
         }
-        return $query->where('id', $id)->firstOrFail($id);
+
+        return $query->firstOrFail();
+    
+    }
+
+    public function getUserByEmail(string $email)
+    {
+        return User::where('email', $email)->first();
     }
     public function createUser(array $data)
     {
@@ -26,33 +33,37 @@ class UserRepository
     }
     public function updateUser($id, array $data, $clinicId = null)
     {
-        $query = User::query();
+        $query = User::query()->where('id', $id);
+
         if ($clinicId !== null) {
             $query->where('clinic_id', $clinicId);
         }
-        $user = $query->where('id', $id)->firstOrFail($id);
+
+        $user = $query->firstOrFail();
         $user->update($data);
         return $user;
     }
     public function deleteUser($id, $clinicId = null)
     {
-        $query = User::query();
+        $query = User::query()->where('id', $id);
+
         if ($clinicId !== null) {
-            $query->where('clinic_id', $clinicId)
-                    ->where('id', $id);
+            $query->where('clinic_id', $clinicId);
         }
-        $user = $query->where('id', $id)->firstOrFail($id);
+
+        $user = $query->firstOrFail();
         $user->delete();
         return true;
     }
     public function toggleUserStatus($id, $clinicId = null)
     {
-        $query = User::query();
+        $query = User::query()->where('id', $id);
+
         if ($clinicId !== null) {
-            $query->where('clinic_id', $clinicId)
-                    ->where('id', $id);
+            $query->where('clinic_id', $clinicId);
         }
-        $user = $query->where('id', $id)->firstOrFail($id);
+
+        $user = $query->firstOrFail();
         $user->is_active = !$user->is_active;
         $user->save();
         return $user;

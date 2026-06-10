@@ -19,7 +19,7 @@ class PatientRepository
             $query->where('clinic_id', $clinicId)
                     ->where('id', $id);
         }
-         return $query->where('id', $id)->firstOrFail($id);
+        return $query->where('id', $id)->firstOrFail();
     }
 
     public function createPatient(array $data, $clinicId = null)

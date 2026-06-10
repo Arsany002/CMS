@@ -7,8 +7,8 @@ use App\Http\Requests\Appointment\StoreAppointmentRequest;
 use App\Http\Requests\Appointment\UpdateAppointmentRequest;
 use App\Http\Resources\AppointmentResource;
 use App\Models\Appointment;
-use App\Models\Patient;
 use App\Repositories\AppointmentRepository;
+use App\Repositories\PatientRepository;
 use App\Services\AppointmentService;
 use App\Traits\ApiResponse;
 use Illuminate\Http\JsonResponse;
@@ -20,7 +20,8 @@ class AppointmentController extends Controller
 
     public function __construct(
         private AppointmentRepository $repo,
-        private AppointmentService $service
+        private AppointmentService $service,
+        private PatientRepository $patientRepo
     ) {}
 
     public function index(Request $request): JsonResponse
@@ -40,20 +41,11 @@ class AppointmentController extends Controller
         );
     }
 
-    /**
-     * @OA\Post(
-     *     path="/api/v1/assistant/appointments",
-     *     tags={"Appointments"},
-     *     security={{"bearerAuth":{}}},
-     *     @OA\RequestBody(required=true, @OA\JsonContent(ref="#/components/schemas/StoreAppointmentRequest")),
-     *     @OA\Response(response=201, description="Appointment created", @OA\JsonContent(ref="#/components/schemas/AppointmentResource")),
-     *     @OA\Response(response=409, description="Appointment conflict")
-     * )
-     */
+   
     public function store(StoreAppointmentRequest $request): JsonResponse
     {
-        // BR-07: Patient must belong to the same clinic
-        $patient = Patient::findOrFail($request->patient_id);
+        // BR-07: Patient must belong to the same clinic (using Repository pattern)
+        $patient = $this->patientRepo->getPatientById($request->patient_id);
 
         // Fixed truncation & Security Update: Compare against the user's clinic_id
         abort_if(
