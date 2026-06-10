@@ -40,6 +40,16 @@ class AppointmentController extends Controller
         );
     }
 
+    /**
+     * @OA\Post(
+     *     path="/api/v1/assistant/appointments",
+     *     tags={"Appointments"},
+     *     security={{"bearerAuth":{}}},
+     *     @OA\RequestBody(required=true, @OA\JsonContent(ref="#/components/schemas/StoreAppointmentRequest")),
+     *     @OA\Response(response=201, description="Appointment created", @OA\JsonContent(ref="#/components/schemas/AppointmentResource")),
+     *     @OA\Response(response=409, description="Appointment conflict")
+     * )
+     */
     public function store(StoreAppointmentRequest $request): JsonResponse
     {
         // BR-07: Patient must belong to the same clinic

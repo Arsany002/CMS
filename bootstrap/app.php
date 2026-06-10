@@ -22,4 +22,26 @@ return Application::configure(basePath: dirname(__DIR__))
         $exceptions->shouldRenderJsonWhen(
             fn (Request $request) => $request->is('api/*'),
         );
+
+        $exceptions->render(function (\App\Exceptions\AppointmentConflictException $e, Request $request) {
+            return response()->json([
+                'error'   => 'appointment_conflict',
+                'message' => 'The doctor already has an appointment at this time.',
+            ], 409);
+        });
+
+        $exceptions->render(function (\Illuminate\Auth\AuthenticationException $e, Request $request) {
+            return response()->json(['error' => 'unauthenticated', 'message' => 'Token invalid or expired.'], 401);
+        });
+
+        $exceptions->render(function (\Illuminate\Validation\ValidationException $e, Request $request) {
+            return response()->json([
+                'error'   => 'validation_failed',
+                'errors'  => $e->errors(),
+            ], 422);
+        });
+
+        $exceptions->render(function (\Illuminate\Auth\Access\AuthorizationException $e, Request $request) {
+            return response()->json(['error' => 'forbidden', 'message' => 'Insufficient permissions.'], 403);
+        });
     })->create();

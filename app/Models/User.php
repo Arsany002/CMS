@@ -13,13 +13,13 @@ use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Foundation\Auth\User as Authenticatable;
 use Illuminate\Notifications\Notifiable;
 use Laravel\Passport\HasApiTokens;
-use PHPOpenSourceSaver\JWTAuth\Contracts\JWTSubject;
+use Spatie\Permission\Traits\HasRoles;
 
 
-class User extends Authenticatable implements JWTSubject 
+class User extends Authenticatable 
 {
     /** @use HasFactory<UserFactory> */
-    use HasApiTokens, HasFactory, Notifiable, HasUuids;
+    use HasApiTokens, HasFactory, Notifiable, HasUuids, HasRoles;
 
     protected $fillable = [
         'clinic_id',
@@ -41,27 +41,11 @@ class User extends Authenticatable implements JWTSubject
         'is_active' => 'boolean',
     ];
 
-    // ─── JWT Contract ──────────────────────────────────────────
 
-    public function getJWTIdentifier(): mixed
-    {
-        return $this->getKey();
-    }
-
-    public function getJWTCustomClaims(): array
-    {
-        return [
-            'role'      => $this->role,
-            'clinic_id' => $this->clinic_id,
-        ];
-    }
 
     // ─── Relationships ─────────────────────────────────────────
 
-    public function refreshTokens(): HasMany
-    {
-        return $this->hasMany(RefreshToken::class);
-    }
+
     public function clinic(): BelongsTo
     {
         return $this->belongsTo(Clinic::class);

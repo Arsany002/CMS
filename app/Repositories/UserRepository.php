@@ -1,7 +1,7 @@
 <?php
 namespace App\Repositories;
 use App\Models\User;
-class UserRepositry
+class UserRepository
 {
     public function getAllUsers($clinicId = null)
     {
