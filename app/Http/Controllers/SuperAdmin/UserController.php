@@ -90,19 +90,26 @@ class UserController extends Controller
     }
     public function updateRole(Request $request, User $user): JsonResponse
     {
+        // 1. Validate the incoming role
         $validated = $request->validate([
             'role' => ['required', 'string', 'in:super_admin,doctor,assistant'],
         ]);
 
-        // Simple column-based RBAC update
+        // 2. Prevent a Super Admin from accidentally demoting themselves
+        if ($request->user()->id === $user->id && $validated['role'] !== 'super_admin') {
+            return $this->error(
+                message: 'You cannot change your own Super Admin role.',
+                status: 403
+            );
+        }
+
+        // 3. Update the role in the database
         $user->update(['role' => $validated['role']]);
 
-        // Note: If you are using Spatie Permission package instead of a simple column, 
-        // you would replace the line above with: $user->syncRoles([$validated['role']]);
-
+        // 4. Return the standard API response
         return $this->success(
             data: $user,
-            message: 'User role updated successfully'
+            message: "User role successfully updated to {$validated['role']}."
         );
     }
 }
