@@ -3,9 +3,7 @@
 namespace App\Http\Controllers\Doctor;
 
 use App\Http\Controllers\Controller;
-use App\Http\Requests\Appointment\StoreAppointmentRequest;
 use App\Http\Resources\AppointmentResource;
-use App\Models\Appointment;
 use App\Repositories\AppointmentRepository;
 use App\Services\AppointmentService;
 use App\Traits\ApiResponse;
@@ -23,8 +21,6 @@ class AppointmentController extends Controller
 
     public function index(Request $request): JsonResponse
     {
-        // Fixed the truncated '$request->on...' 
-        // Assuming you wanted to pass specific filters like date or status.
         $filters = $request->only(['date', 'status']);
 
         $appointments = $this->repo->allForDoctor($request->user()->id, $filters);
@@ -34,27 +30,22 @@ class AppointmentController extends Controller
         );
     }
 
-    public function show(Request $request, Appointment $appointment): JsonResponse
+    public function show(Request $request, int $id): JsonResponse
     {
-        // Security check: Ensure the logged-in doctor actually owns this appointment
-        abort_if($appointment->doctor_id !== $request->user()->id, 403, 'Unauthorized access to this appointment.');
+        $appointment = $this->repo->findForDoctor($id, $request->user()->id);
 
-        // Fixed the truncated repo call and added the missing closing brackets
         return $this->success(
-            data: new AppointmentResource($this->repo->find($appointment->id))
+            data: new AppointmentResource($appointment)
         );
     }
 
-    public function updateStatus(Request $request, Appointment $appointment): JsonResponse
+    public function updateStatus(Request $request, int $id): JsonResponse
     {
-        // Security check: Ensure the logged-in doctor actually owns this appointment
-        abort_if($appointment->doctor_id !== $request->user()->id, 403, 'Unauthorized access to this appointment.');
-
-        // Simple validation directly in the controller (acceptable for single fields)
         $request->validate([
             'status' => ['required', 'in:confirmed,cancelled,completed'],
         ]);
 
+        $appointment = $this->repo->findForDoctor($id, $request->user()->id);
         $updated = $this->service->updateStatus($appointment, $request->status);
 
         return $this->success(

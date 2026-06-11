@@ -39,12 +39,16 @@ class AppointmentRepository
             ->paginate($perPage);
     }
 
-    /**
-     * Find a specific appointment by ID.
-     */
     public function find(int $id): Appointment
     {
         return Appointment::with(['patient', 'doctor', 'prescription.items'])->findOrFail($id);
+    }
+
+    public function findForDoctor(int $id, int $doctorId): Appointment
+    {
+        return Appointment::with(['patient', 'prescription.items'])
+            ->where('doctor_id', $doctorId)
+            ->findOrFail($id);
     }
 
     /**
