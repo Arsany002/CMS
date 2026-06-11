@@ -28,6 +28,7 @@ Route::prefix('v1')->name('api.v1.')->group(function () {
     Route::middleware(['auth:api', 'throttle:api', 'role:super_admin'])->prefix('super-admin')->group(function () {
         Route::apiResource('clinics', ClinicController::class)->except(['destroy']);
         Route::patch('clinics/{clinic}/toggle', [ClinicController::class, 'toggle']);
+        Route::patch('users/{user}/role', [UserController::class, 'updateRole']);
 
         Route::apiResource('users', UserController::class)->except(['destroy']);
         Route::patch('users/{user}/toggle', [UserController::class, 'toggle']);
