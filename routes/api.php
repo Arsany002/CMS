@@ -16,6 +16,7 @@ Route::prefix('v1')->name('api.v1.')->group(function () {
     // ─── Auth ───────────────────────────────────────────────────────────────────
     Route::prefix('auth')->middleware('throttle:auth')->group(function () {
         Route::post('login', [AuthController::class, 'login']);
+        Route::post('register', [AuthController::class, 'register']);
 
         Route::middleware(['auth:api', 'throttle:api'])->group(function () {
             Route::post('logout', [AuthController::class, 'logout']);

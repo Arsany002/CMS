@@ -10,6 +10,7 @@ use App\Models\User;
 use App\Repositories\UserRepository;
 use App\Traits\ApiResponse;
 use Illuminate\Http\JsonResponse;
+use Request;
 
 class UserController extends Controller
 {
@@ -85,6 +86,23 @@ class UserController extends Controller
         return $this->success(
             data: new UserResource($updated),
             message: 'User status toggled successfully'
+        );
+    }
+    public function updateRole(Request $request, User $user): JsonResponse
+    {
+        $validated = $request->validate([
+            'role' => ['required', 'string', 'in:super_admin,doctor,assistant'],
+        ]);
+
+        // Simple column-based RBAC update
+        $user->update(['role' => $validated['role']]);
+
+        // Note: If you are using Spatie Permission package instead of a simple column, 
+        // you would replace the line above with: $user->syncRoles([$validated['role']]);
+
+        return $this->success(
+            data: $user,
+            message: 'User role updated successfully'
         );
     }
 }

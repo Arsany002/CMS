@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Auth;
 
 use App\Http\Controllers\Controller;
 use App\Http\Requests\Auth\LoginRequest;
+use App\Http\Requests\Auth\RegisterRequest;
 use App\Http\Resources\UserResource;
 use App\Services\AuthService;
 use App\Traits\ApiResponse;
@@ -29,6 +30,19 @@ class AuthController extends Controller
                 'token' => $result['token'],
             ],
             message: 'Login successful'
+        );
+    }
+    public function register(RegisterRequest $request): JsonResponse
+    {
+        $result = $this->authService->register($request->validated());
+
+        return $this->success(
+            data: [
+                'user'  => new UserResource($result['user']),
+                'token' => $result['token'],
+            ],
+            message: 'User registered successfully',
+            status: 201 // 201 Created
         );
     }
 

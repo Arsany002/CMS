@@ -38,6 +38,25 @@ class AuthService
             'token' => $token
         ];
     }
+    public function register(array $data): array
+    {
+        // Hash the password before saving
+        $data['password'] = Hash::make($data['password']);
+
+        // Set default active status
+        $data['is_active'] = $data['is_active'] ?? true;
+
+        // Assuming your repository has a create method
+        $user = $this->userRepo->createUser($data);
+
+        // Generate the Passport token
+        $token = $user->createToken('Clinic API Token')->accessToken;
+
+        return [
+            'user' => $user,
+            'token' => $token
+        ];
+    }
 
     /**
      * Revoke the user's current Passport token.
