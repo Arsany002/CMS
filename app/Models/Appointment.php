@@ -2,28 +2,37 @@
 
 namespace App\Models;
 
+use App\Enums\AppointmentStatus;
 use Illuminate\Database\Eloquent\Concerns\HasUuids;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
-use Illuminate\Database\Eloquent\Relations\HasMany;
+use Illuminate\Database\Eloquent\Relations\HasOne;
 
 class Appointment extends Model
 {
     use HasFactory, HasUuids;
 
     protected $fillable = [
-        'appointment_id',
+        'clinic_id',
         'doctor_id',
         'patient_id',
-        'clinic_id',
-        'diagnosis',
+        'booked_by',
+        'appointment_date',
+        'start_time',
+        'end_time',
+        'status',
         'notes',
     ];
 
-    public function appointment(): BelongsTo
+    protected $casts = [
+        'appointment_date' => 'date',
+        'status'           => AppointmentStatus::class,
+    ];
+
+    public function clinic(): BelongsTo
     {
-        return $this->belongsTo(Appointment::class);
+        return $this->belongsTo(Clinic::class);
     }
 
     public function doctor(): BelongsTo
@@ -36,8 +45,13 @@ class Appointment extends Model
         return $this->belongsTo(Patient::class);
     }
 
-    public function items(): HasMany
+    public function bookedBy(): BelongsTo
     {
-        return $this->hasMany(PrescriptionItem::class);
+        return $this->belongsTo(User::class, 'booked_by');
+    }
+
+    public function prescription(): HasOne
+    {
+        return $this->hasOne(Prescription::class);
     }
 }

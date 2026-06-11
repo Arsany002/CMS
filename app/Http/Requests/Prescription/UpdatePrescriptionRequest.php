@@ -7,23 +7,25 @@ use Illuminate\Foundation\Http\FormRequest;
 
 class UpdatePrescriptionRequest extends FormRequest
 {
-    /**
-     * Determine if the user is authorized to make this request.
-     */
     public function authorize(): bool
     {
-        return false;
+        return true;
     }
 
     /**
-     * Get the validation rules that apply to the request.
-     *
      * @return array<string, ValidationRule|array<mixed>|string>
      */
     public function rules(): array
     {
         return [
-            //
+            'diagnosis'              => ['sometimes', 'required', 'string', 'max:1000'],
+            'notes'                  => ['sometimes', 'nullable', 'string', 'max:1000'],
+            'items'                  => ['sometimes', 'required', 'array', 'min:1'],
+            'items.*.medicine_name'  => ['required_with:items', 'string', 'max:255'],
+            'items.*.dosage'         => ['required_with:items', 'string', 'max:255'],
+            'items.*.frequency'      => ['required_with:items', 'string', 'max:255'],
+            'items.*.duration'       => ['required_with:items', 'string', 'max:255'],
+            'items.*.notes'          => ['nullable', 'string', 'max:1000'],
         ];
     }
 }

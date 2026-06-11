@@ -1,59 +1,70 @@
 <?php
+
 namespace App\Repositories;
+
 use App\Models\Patient;
+use Illuminate\Database\Eloquent\Collection;
+
 class PatientRepository
 {
-    public function getAllPatients($clinicId = null)
+    public function getAllPatients(?string $clinicId = null): Collection
     {
-        $query = Patient::query();
+        $query = Patient::select(['id', 'clinic_id', 'name', 'email', 'phone', 'date_of_birth', 'gender']);
+
         if ($clinicId !== null) {
             $query->where('clinic_id', $clinicId);
         }
+
         return $query->get();
     }
 
-    public function getPatientById($id, $clinicId = null)
+    public function getPatientById(string $id, ?string $clinicId = null): Patient
     {
-        $query = Patient::query();
+        $query = Patient::where('id', $id);
+
         if ($clinicId !== null) {
-            $query->where('clinic_id', $clinicId)
-                    ->where('id', $id);
+            $query->where('clinic_id', $clinicId);
         }
-        return $query->where('id', $id)->firstOrFail();
+
+        return $query->firstOrFail();
     }
 
-    public function createPatient(array $data, $clinicId = null)
+    public function createPatient(array $data): Patient
     {
         return Patient::create($data);
     }
 
-    public function updatePatient($id, array $data, $clinicId = null)
+    public function updatePatient(string $id, array $data, ?string $clinicId = null): Patient
     {
-        $query = Patient::query();
+        $query = Patient::where('id', $id);
+
         if ($clinicId !== null) {
-            $query->where('clinic_id', $clinicId)
-                    ->where('id', $id);
+            $query->where('clinic_id', $clinicId);
         }
-        $patient = $query->where('id', $id)->firstOrFail($id);
+
+        $patient = $query->firstOrFail();
         $patient->update($data);
         return $patient;
     }
 
-    public function deletePatient($id, $clinicId = null)
+    public function deletePatient(string $id, ?string $clinicId = null): bool
     {
-        $query = Patient::query();
+        $query = Patient::where('id', $id);
+
         if ($clinicId !== null) {
-            $query->where('clinic_id', $clinicId)
-                    ->where('id', $id);
+            $query->where('clinic_id', $clinicId);
         }
-        $patient = $query->where('id', $id)->firstOrFail($id);
+
+        $patient = $query->firstOrFail();
         $patient->delete();
         return true;
     }
-    public function allForClinic(int $clinicId, ?string $search = null)
+
+    public function allForClinic(string $clinicId, ?string $search = null): Collection
     {
-        return Patient::where('clinic_id', $clinicId)
-            ->when($search, fn($q) => $q->where('name', 'like', "%$search%"))
+        return Patient::select(['id', 'clinic_id', 'name', 'email', 'phone', 'date_of_birth', 'gender'])
+            ->where('clinic_id', $clinicId)
+            ->when($search, fn($q) => $q->whereFullText(['name', 'phone'], $search))
             ->get();
     }
 }

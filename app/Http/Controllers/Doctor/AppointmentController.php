@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Doctor;
 
 use App\Http\Controllers\Controller;
+use App\Http\Requests\Appointment\UpdateAppointmentStatusRequest;
 use App\Http\Resources\AppointmentResource;
 use App\Repositories\AppointmentRepository;
 use App\Services\AppointmentService;
@@ -39,12 +40,8 @@ class AppointmentController extends Controller
         );
     }
 
-    public function updateStatus(Request $request, int $id): JsonResponse
+    public function updateStatus(UpdateAppointmentStatusRequest $request, int $id): JsonResponse
     {
-        $request->validate([
-            'status' => ['required', 'in:confirmed,cancelled,completed'],
-        ]);
-
         $appointment = $this->repo->findForDoctor($id, $request->user()->id);
         $updated = $this->service->updateStatus($appointment, $request->status);
 

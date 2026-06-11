@@ -1,63 +1,41 @@
 <?php
+
 namespace App\Repositories;
+
 use App\Models\Clinic;
-use App\Models\User;
+use Illuminate\Database\Eloquent\Collection;
 
 class ClinicRepository
 {
-    public function getAllClinics($clinicId = null)
+    public function getAllClinics(): Collection
     {
-        $query = Clinic::query();
-        if ($clinicId !== null) {
-            $query->where('id', $clinicId);
-        }
-        return $query->get();
+        return Clinic::all();
     }
 
-    public function getClinicById($id, $clinicId = null)
+    public function getClinicById(int|string $id): Clinic
     {
-        $query = Clinic::query();
-        if ($clinicId !== null) {
-            $query->where('clinic_id', $clinicId)
-                    ->where('id', $id);
-        }
-         return $query->where('id', $id)->firstOrFail($id);
+        return Clinic::findOrFail($id);
     }
 
-   
-
-    public function createClinic(array $data, $clinicId = null)
+    public function createClinic(array $data): Clinic
     {
         return Clinic::create($data);
     }
 
-    public function updateClinic($id, array $data, $clinicId = null)
+    public function updateClinic(Clinic $clinic, array $data): Clinic
     {
-        $query = Clinic::query();
-        if ($clinicId !== null) {
-            $query->where('clinic_id', $clinicId)
-                    ->where('id', $id);
-        }
-        $clinic = $query->where('id', $id)->firstOrFail($id);
         $clinic->update($data);
         return $clinic;
     }
 
-    public function deleteClinic($id, $clinicId = null)
+    public function deleteClinic(Clinic $clinic): bool
     {
-        $query = Clinic::query();
-        if ($clinicId !== null) {
-            $query->where('clinic_id', $clinicId)
-                    ->where('id', $id);
-        }
-        $clinic = $query->where('id', $id)->firstOrFail($id);
         $clinic->delete();
         return true;
     }
-    public function toggleClinicStatus($id)
+
+    public function saveClinic(Clinic $clinic): Clinic
     {
-        $clinic = Clinic::findOrFail($id);
-        $clinic->is_active = !$clinic->is_active;
         $clinic->save();
         return $clinic;
     }

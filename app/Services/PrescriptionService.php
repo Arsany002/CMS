@@ -24,7 +24,7 @@ class PrescriptionService
         }
 
         // BR-06: No prescription can be written for a cancelled appointment
-        if ($appointment->status === AppointmentStatus::CANCELLED->value) {
+        if ($appointment->status === AppointmentStatus::CANCELLED) {
             throw ValidationException::withMessages([
                 'appointment_id' => ['Cannot create a prescription for a cancelled appointment.']
             ]);
@@ -40,6 +40,6 @@ class PrescriptionService
 
     public function update(Prescription $prescription, array $data, array $items): Prescription
     {
-        return $this->repo->update($prescription->id, $data, $items);
+        return $this->repo->update($prescription, $data, $items);
     }
 }

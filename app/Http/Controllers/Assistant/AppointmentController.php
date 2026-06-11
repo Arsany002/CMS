@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Assistant;
 
 use App\Http\Controllers\Controller;
+use App\Http\Requests\Appointment\AvailableSlotsRequest;
 use App\Http\Requests\Appointment\StoreAppointmentRequest;
 use App\Http\Requests\Appointment\UpdateAppointmentRequest;
 use App\Http\Resources\AppointmentResource;
@@ -93,14 +94,8 @@ class AppointmentController extends Controller
         return $this->success(message: 'Appointment cancelled successfully');
     }
 
-    public function availableSlots(Request $request): JsonResponse
+    public function availableSlots(AvailableSlotsRequest $request): JsonResponse
     {
-        $request->validate([
-            'doctor_id' => ['required', 'exists:users,id'],
-            'date'      => ['required', 'date', 'after_or_equal:today'],
-        ]);
-
-        // Fixed truncation
         $slots = $this->service->getAvailableSlots($request->doctor_id, $request->date);
 
         return $this->success(data: ['slots' => $slots]);

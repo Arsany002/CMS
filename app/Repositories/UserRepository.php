@@ -1,37 +1,44 @@
 <?php
+
 namespace App\Repositories;
+
 use App\Models\User;
+
 class UserRepository
 {
-    public function getAllUsers($clinicId = null)
+    public function getAllUsers(?string $clinicId = null)
     {
-        $query = User::query();
+        $query = User::select(['id', 'clinic_id', 'name', 'email', 'phone', 'role', 'is_active', 'created_at']);
+
         if ($clinicId !== null) {
             $query->where('clinic_id', $clinicId);
         }
+
         return $query->get();
     }
-    public function getUserById($id, $clinicId = null)
+
+    public function getUserById(string $id, ?string $clinicId = null)
     {
-        $query = User::query()->where('id', $id);
+        $query = User::where('id', $id);
 
         if ($clinicId !== null) {
             $query->where('clinic_id', $clinicId);
         }
 
         return $query->firstOrFail();
-    
     }
 
     public function getUserByEmail(string $email)
     {
         return User::where('email', $email)->first();
     }
+
     public function createUser(array $data)
     {
         return User::create($data);
     }
-    public function updateUser($id, array $data, $clinicId = null)
+
+    public function updateUser(string $id, array $data, ?string $clinicId = null)
     {
         $query = User::query()->where('id', $id);
 
@@ -43,7 +50,8 @@ class UserRepository
         $user->update($data);
         return $user;
     }
-    public function deleteUser($id, $clinicId = null)
+
+    public function deleteUser(string $id, ?string $clinicId = null)
     {
         $query = User::query()->where('id', $id);
 
@@ -55,7 +63,8 @@ class UserRepository
         $user->delete();
         return true;
     }
-    public function toggleUserStatus($id, $clinicId = null)
+
+    public function toggleUserStatus(string $id, ?string $clinicId = null)
     {
         $query = User::query()->where('id', $id);
 
