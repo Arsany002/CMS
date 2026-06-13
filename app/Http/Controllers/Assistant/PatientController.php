@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers\Assistant;
 
+use App\Exceptions\ClinicScopeViolationException;
 use App\Http\Controllers\Controller;
 use App\Http\Requests\Patient\StorePatientRequest;
 use App\Http\Requests\Patient\UpdatePatientRequest;
@@ -33,21 +34,25 @@ class PatientController extends Controller
             'clinic_id' => $request->clinic_id,
         ]);
 
-        $patient = $this->repo->createPatient($data, $request->clinic_id);
+        $patient = $this->repo->createPatient($data);
 
         return $this->success(new PatientResource($patient), 'Patient created', 201);
     }
 
     public function show(Request $request, Patient $patient)
     {
-        abort_if($patient->clinic_id !== $request->clinic_id, 403);
+        if ($patient->clinic_id !== $request->clinic_id) {
+            throw new ClinicScopeViolationException();
+        }
 
         return $this->success(new PatientResource($this->repo->getPatientById($patient->id, $request->clinic_id)));
     }
 
     public function update(UpdatePatientRequest $request, Patient $patient)
     {
-        abort_if($patient->clinic_id !== $request->clinic_id, 403);
+        if ($patient->clinic_id !== $request->clinic_id) {
+            throw new ClinicScopeViolationException();
+        }
 
         $updated = $this->repo->updatePatient($patient->id, $request->validated(), $request->clinic_id);
 

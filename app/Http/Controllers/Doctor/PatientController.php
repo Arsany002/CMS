@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers\Doctor;
 
+use App\Exceptions\ClinicScopeViolationException;
 use App\Http\Controllers\Controller;
 use App\Http\Resources\PatientResource;
 use App\Models\Patient;
@@ -27,8 +28,9 @@ class PatientController extends Controller
 
     public function show(Request $request, Patient $patient)
     {
-        // Enforce clinic scope — doctor cannot peek at another clinic's patient
-        abort_if($patient->clinic_id !== $request->clinic_id, 403);
+        if ($patient->clinic_id !== $request->clinic_id) {
+            throw new ClinicScopeViolationException();
+        }
 
         return $this->success(new PatientResource($this->repo->getPatientById($patient->id, $request->clinic_id)));
     }

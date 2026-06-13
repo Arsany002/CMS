@@ -1,0 +1,1386 @@
+%% ============================================================
+%%  Chapter 4 — Authentication and Role-Based Access Control
+%%  04_authentication.tex
+%% ============================================================
+\chapter{Authentication and Role-Based Access Control}
+\label{chap:auth}
+
+\chapterintro{%
+  This chapter provides a complete technical specification of the
+  authentication and authorisation subsystem. It covers the Laravel
+  Passport OAuth2 implementation in depth---including the token
+  issuance pipeline, the middleware chain, and the revocation
+  strategy---followed by a precise definition of the three-tier role
+  hierarchy, a comprehensive mapping of every API endpoint to its
+  required role, and a formal analysis of the mechanisms by which the
+  system prevents both horizontal and vertical privilege escalation.
+}
+
+%% ─────────────────────────────────────────────────────────────────────────
+\section{Authentication Architecture Overview}
+\label{sec:auth-overview}
+%% ─────────────────────────────────────────────────────────────────────────
+
+The Clinic Management API uses a \textbf{stateless, token-based
+authentication model} built on the OAuth2 specification, implemented
+through the Laravel Passport package. Every request that accesses a
+protected resource must present a cryptographically signed Bearer token
+in the HTTP \texttt{Authorization} header. The server neither sets
+cookies nor maintains any session state between requests; the token
+itself is the sole proof of identity.
+
+The choice of OAuth2 Personal Access Tokens over a simpler shared-secret
+or JWT-only scheme is deliberate. Passport's token infrastructure stores
+a record of every issued token in the \texttt{oauth\_access\_tokens}
+table, which enables \textbf{server-side revocation}: when a user logs
+out, the token is invalidated at the database level. Any subsequent
+request bearing that token will be rejected with a \stunauth{} response,
+regardless of whether the token's cryptographic signature is still valid.
+This property is essential in a clinical environment where a lost or
+stolen device must be immediately locked out.
+
+\begin{figure}[h!]
+  \centering
+  \begin{tcolorbox}[
+    enhanced, arc=4pt, boxrule=1pt,
+    colback=LightGray, colframe=RuleGray,
+    left=12pt, right=12pt, top=10pt, bottom=10pt,
+    width=\linewidth,
+  ]
+  \centering
+  \textbf{Client Request}
+  \quad\textcolor{AccentTeal}{$\longrightarrow$}\quad
+  \textcolor{PrimaryBlue}{\textbf{auth:api Middleware}}
+  \quad\textcolor{AccentTeal}{$\longrightarrow$}\quad
+  \textcolor{PrimaryBlue}{\textbf{RoleMiddleware}}
+  \quad\textcolor{AccentTeal}{$\longrightarrow$}\quad
+  \textcolor{PrimaryBlue}{\textbf{ClinicScopeMiddleware}}
+  \quad\textcolor{AccentTeal}{$\longrightarrow$}\quad
+  \textcolor{MethodPost}{\textbf{Controller}}
+
+  \vspace{6pt}
+  \small
+  Each middleware either advances the request or terminates it with an
+  appropriate HTTP error response.
+  \end{tcolorbox}
+  \caption{The three-stage middleware pipeline every protected request
+    traverses before reaching a controller.}
+  \label{fig:middleware-pipeline}
+\end{figure}
+
+%% ─────────────────────────────────────────────────────────────────────────
+\section{Laravel Passport: Installation and Configuration}
+\label{sec:passport-setup}
+%% ─────────────────────────────────────────────────────────────────────────
+
+\subsection{Package Installation and Key Generation}
+
+Laravel Passport is installed as a Composer dependency. After
+installation, the \texttt{passport:install} Artisan command generates
+the RSA key pair that Passport uses to sign and verify access tokens.
+The private key signs outgoing tokens; the public key verifies incoming
+ones. These keys must be present in the deployment environment and must
+never be committed to version control.
+
+\begin{lstlisting}[style=bash, caption={Installing Passport and generating
+  encryption keys.}]
+composer require laravel/passport
+
+php artisan passport:install
+# Generates storage/oauth-private.key and storage/oauth-public.key
+# Runs the oauth_* migrations (clients, tokens, auth codes)
+
+php artisan migrate
+\end{lstlisting}
+
+\subsection{Model Integration}
+
+The \phpclass{User} Eloquent model uses the
+\texttt{Laravel\textbackslash{}Passport\textbackslash{}HasApiTokens}
+trait, which adds the \texttt{createToken()} method and the
+\texttt{tokens} relationship used throughout the authentication service.
+
+\begin{lstlisting}[style=php, caption={\texttt{app/Models/User.php} ---
+  Passport trait integration and role enum casting.}]
+<?php
+
+namespace App\Models;
+
+use App\Enums\UserRole;
+use Illuminate\Database\Eloquent\Concerns\HasUuids;
+use Illuminate\Foundation\Auth\User as Authenticatable;
+use Illuminate\Database\Eloquent\Factories\HasFactory;
+use Illuminate\Database\Eloquent\Relations\HasMany;
+use Laravel\Passport\HasApiTokens;
+
+class User extends Authenticatable
+{
+    use HasApiTokens, HasFactory, HasUuids;
+
+    protected $fillable = [
+        'name',
+        'email',
+        'password',
+        'role',
+        'clinic_id',
+        'is_active',
+    ];
+
+    protected $hidden = [
+        'password',
+        'remember_token',
+    ];
+
+    protected function casts(): array
+    {
+        return [
+            'role'      => UserRole::class,
+            'is_active' => 'boolean',
+            'password'  => 'hashed',
+        ];
+    }
+
+    public function clinic(): BelongsTo
+    {
+        return $this->belongsTo(Clinic::class);
+    }
+
+    public function appointments(): HasMany
+    {
+        return $this->hasMany(Appointment::class, 'doctor_id');
+    }
+
+    public function schedules(): HasMany
+    {
+        return $this->hasMany(DoctorSchedule::class, 'doctor_id');
+    }
+}
+\end{lstlisting}
+
+\subsection{Passport Registration in the Application Bootstrap}
+
+In Laravel 12, Passport is registered in
+\texttt{bootstrap/app.php} rather than a dedicated service provider.
+The \texttt{withRouting()} call integrates Passport's own OAuth2
+endpoint group, and \texttt{withMiddleware()} registers the
+\texttt{auth:api} alias.
+
+\begin{lstlisting}[style=php, caption={\texttt{bootstrap/app.php} ---
+  Passport registration and API guard configuration.}]
+<?php
+
+use Illuminate\Foundation\Application;
+use Illuminate\Foundation\Configuration\Exceptions;
+use Illuminate\Foundation\Configuration\Middleware;
+use Laravel\Passport\Http\Middleware\CheckForAnyScope;
+use App\Http\Middleware\RoleMiddleware;
+use App\Http\Middleware\ClinicScopeMiddleware;
+
+return Application::configure(basePath: dirname(__DIR__))
+    ->withRouting(
+        api: __DIR__.'/../routes/api.php',
+        apiPrefix: 'api',
+        commands: __DIR__.'/../routes/console.php',
+        health: '/up',
+    )
+    ->withMiddleware(function (Middleware $middleware) {
+        $middleware->alias([
+            'role'         => RoleMiddleware::class,
+            'clinic.scope' => ClinicScopeMiddleware::class,
+        ]);
+    })
+    ->withExceptions(function (Exceptions $exceptions) {
+        // Exception handler bindings — see Chapter 6.
+    })->create();
+\end{lstlisting}
+
+\subsection{API Guard Configuration}
+
+Laravel's \texttt{config/auth.php} designates Passport as the driver
+for the \texttt{api} guard. The \texttt{provider} points to the
+\texttt{users} provider, which resolves to the \phpclass{User} model.
+
+\begin{lstlisting}[style=php, caption={\texttt{config/auth.php} ---
+  API guard using the Passport driver.}]
+'guards' => [
+    'web' => [
+        'driver'   => 'session',
+        'provider' => 'users',
+    ],
+
+    'api' => [
+        'driver'   => 'passport',
+        'provider' => 'users',
+    ],
+],
+
+'providers' => [
+    'users' => [
+        'driver' => 'eloquent',
+        'model'  => App\Models\User::class,
+    ],
+],
+\end{lstlisting}
+
+%% ─────────────────────────────────────────────────────────────────────────
+\section{The Authentication Service and Token Lifecycle}
+\label{sec:auth-service}
+%% ─────────────────────────────────────────────────────────────────────────
+
+\subsection{The UserRole Enum}
+
+Before examining the authentication service, it is necessary to
+understand the \phpclass{UserRole} enum that is central to all
+role-based decisions throughout the application.
+
+\begin{lstlisting}[style=php, caption={\texttt{app/Enums/UserRole.php} ---
+  PHP 8.1 backed string enum for the three system roles.}]
+<?php
+
+namespace App\Enums;
+
+enum UserRole: string
+{
+    case SUPER_ADMIN = 'super_admin';
+    case DOCTOR      = 'doctor';
+    case ASSISTANT   = 'assistant';
+
+    public function label(): string
+    {
+        return match($this) {
+            UserRole::SUPER_ADMIN => 'Super Administrator',
+            UserRole::DOCTOR      => 'Doctor',
+            UserRole::ASSISTANT   => 'Assistant',
+        };
+    }
+
+    public function isClinicalStaff(): bool
+    {
+        return match($this) {
+            UserRole::SUPER_ADMIN => false,
+            UserRole::DOCTOR,
+            UserRole::ASSISTANT   => true,
+        };
+    }
+}
+\end{lstlisting}
+
+\begin{notebox}[Enum Casting]
+  Because \texttt{UserRole} is declared in the \texttt{casts()} method
+  of the \phpclass{User} model, Eloquent automatically deserialises the
+  raw string value stored in the database
+  (\texttt{"super\_admin"}, \texttt{"doctor"}, \texttt{"assistant"})
+  into a \phpclass{UserRole} enum instance when a \phpclass{User} model
+  is hydrated. Comparisons throughout the application therefore use the
+  type-safe \texttt{UserRole::DOCTOR} form rather than the raw string
+  \texttt{"doctor"}, eliminating an entire class of typo-induced bugs.
+\end{notebox}
+
+\subsection{AuthService: Login Logic}
+
+The \phpclass{AuthService} class encapsulates all authentication
+business logic. The controller delegates to this service entirely and
+contains no credential-checking code of its own.
+
+\begin{lstlisting}[style=php, caption={\texttt{app/Services/AuthService.php} ---
+  Credential verification, active account check, and token issuance.}]
+<?php
+
+namespace App\Services;
+
+use App\Exceptions\AccountDeactivatedException;
+use App\Models\User;
+use Illuminate\Support\Facades\Auth;
+
+class AuthService
+{
+    public function login(string $email, string $password): array
+    {
+        if (! Auth::attempt(['email' => $email, 'password' => $password])) {
+            throw new \Illuminate\Validation\ValidationException(
+                validator([], []),
+                response()->json([
+                    'success' => false,
+                    'message' => 'The provided credentials are incorrect.',
+                ], 401)
+            );
+        }
+
+        /** @var User $user */
+        $user = Auth::user();
+
+        if (! $user->is_active) {
+            Auth::logout();
+            throw new AccountDeactivatedException();
+        }
+
+        $token = $user->createToken('clinic-management-api')->accessToken;
+
+        return [
+            'user'  => $user,
+            'token' => $token,
+        ];
+    }
+
+    public function logout(User $user): void
+    {
+        $user->token()->revoke();
+    }
+
+    public function me(User $user): User
+    {
+        return $user->load('clinic');
+    }
+}
+\end{lstlisting}
+
+\begin{warningbox}[AccountDeactivatedException]
+  After a successful credential match, the service performs a second
+  check against the \texttt{is\_active} flag before issuing a token.
+  This ordering is intentional: credentials are verified first so that
+  the error message does not reveal whether an email address exists in
+  the system. Only after credentials are confirmed valid does the system
+  disclose that the account is deactivated. This prevents user
+  enumeration via the login endpoint.
+\end{warningbox}
+
+\subsection{AuthController: HTTP Layer}
+
+The \phpclass{AuthController} contains no business logic. It receives
+the validated form request, delegates to the service, and serialises the
+response.
+
+\begin{lstlisting}[style=php, caption={\texttt{app/Http/Controllers/AuthController.php}
+  --- Thin controller delegating entirely to \phpclass{AuthService}.}]
+<?php
+
+namespace App\Http\Controllers;
+
+use App\Http\Requests\Auth\LoginRequest;
+use App\Http\Resources\UserResource;
+use App\Services\AuthService;
+use App\Traits\ApiResponse;
+use Illuminate\Http\JsonResponse;
+use Illuminate\Http\Request;
+
+class AuthController extends Controller
+{
+    use ApiResponse;
+
+    public function __construct(
+        private readonly AuthService $authService,
+    ) {}
+
+    public function login(LoginRequest $request): JsonResponse
+    {
+        $result = $this->authService->login(
+            email:    $request->validated('email'),
+            password: $request->validated('password'),
+        );
+
+        return $this->successResponse(
+            data: [
+                'user'         => new UserResource($result['user']),
+                'access_token' => $result['token'],
+                'token_type'   => 'Bearer',
+            ],
+            message: 'Login successful.',
+            status: 200,
+        );
+    }
+
+    public function logout(Request $request): JsonResponse
+    {
+        $this->authService->logout($request->user());
+
+        return $this->successResponse(
+            data:    [],
+            message: 'Logged out successfully.',
+        );
+    }
+
+    public function me(Request $request): JsonResponse
+    {
+        $user = $this->authService->me($request->user());
+
+        return $this->successResponse(
+            data:    new UserResource($user),
+            message: 'Authenticated user retrieved.',
+        );
+    }
+}
+\end{lstlisting}
+
+\subsection{Login Request Validation}
+
+The \phpclass{LoginRequest} form request enforces structure before the
+controller is even reached.
+
+\begin{lstlisting}[style=php, caption={\texttt{app/Http/Requests/Auth/LoginRequest.php}.}]
+<?php
+
+namespace App\Http\Requests\Auth;
+
+use Illuminate\Foundation\Http\FormRequest;
+
+class LoginRequest extends FormRequest
+{
+    public function authorize(): bool
+    {
+        return true;
+    }
+
+    public function rules(): array
+    {
+        return [
+            'email'    => ['required', 'string', 'email'],
+            'password' => ['required', 'string'],
+        ];
+    }
+}
+\end{lstlisting}
+
+\subsection{Token Issuance and the oauth\_access\_tokens Table}
+
+When \texttt{\$user->createToken('clinic-management-api')} is called,
+Passport performs the following sequence:
+
+\begin{enumerate}
+  \item Generates a cryptographically random 80-character token string.
+  \item Splits the string: the first 40 characters are the
+    \textbf{token ID}; the second 40 characters are the
+    \textbf{token secret}.
+  \item Hashes the secret with SHA-256 and persists a record to
+    \texttt{oauth\_access\_tokens} containing the token ID, the hashed
+    secret, the user ID, the client ID, and expiry metadata.
+  \item Returns the raw (unhashed) 80-character string to the
+    application, which is returned to the client only once. It is never
+    stored in plaintext anywhere in the system.
+\end{enumerate}
+
+On every subsequent request bearing this token, Passport's
+\texttt{auth:api} middleware repeats the split, hashes the secret
+portion, and queries \texttt{oauth\_access\_tokens} by token ID for a
+record whose hashed secret matches and whose \texttt{revoked} flag is
+\texttt{0}. Only when both conditions hold is the request considered
+authenticated.
+
+\begin{table}[h!]
+  \centering
+  \caption{Key columns in the \texttt{oauth\_access\_tokens} table
+    managed by Laravel Passport.}
+  \label{tab:oauth-tokens-table}
+  \renewcommand{\arraystretch}{1.4}
+  \begin{tabularx}{\linewidth}{@{}L{3.5cm} L{2.8cm} X@{}}
+    \toprule
+    \rowcolor{PrimaryBlue}
+    \tblhdr{Column} & \tblhdr{Type} & \tblhdr{Purpose} \\
+    \midrule
+    \texttt{id}          & \texttt{VARCHAR(100)} & The first 40 chars of the issued
+                                                   token; used as the lookup key. \\
+    \rowalt
+    \texttt{user\_id}    & \texttt{CHAR(36)}     & UUID of the owning \phpclass{User}
+                                                   record. \\
+    \texttt{client\_id}  & \texttt{CHAR(36)}     & The Passport client that issued
+                                                   this token. \\
+    \rowalt
+    \texttt{name}        & \texttt{VARCHAR(255)} & Human-readable label passed to
+                                                   \texttt{createToken()}. \\
+    \texttt{scopes}      & \texttt{TEXT}         & JSON array of OAuth2 scopes
+                                                   (empty array for PATs in this API). \\
+    \rowalt
+    \texttt{revoked}     & \texttt{TINYINT(1)}   & Set to \texttt{1} on logout;
+                                                   causes all future requests to
+                                                   be rejected. \\
+    \texttt{expires\_at} & \texttt{DATETIME}     & Token expiry timestamp. Configurable
+                                                   via \texttt{Passport::tokensExpireIn()}. \\
+    \bottomrule
+  \end{tabularx}
+\end{table}
+
+\subsection{Token Revocation on Logout}
+
+Token revocation is deliberately simple. When the authenticated user
+calls \route{POST /api/\apiversion{}/auth/logout}, the service calls
+\texttt{\$user->token()->revoke()}, which executes:
+
+\begin{lstlisting}[style=php, caption={Passport's internal revocation update.}]
+DB::table('oauth_access_tokens')
+    ->where('id', $this->id)
+    ->update(['revoked' => true]);
+\end{lstlisting}
+
+From this point forward, the \texttt{auth:api} middleware will find
+\texttt{revoked = 1} for this token and return a \stunauth{} response.
+The client is expected to discard the token from its local storage.
+
+%% ─────────────────────────────────────────────────────────────────────────
+\section{Canonical JSON Request and Response Examples}
+\label{sec:auth-examples}
+%% ─────────────────────────────────────────────────────────────────────────
+
+\subsection{Login}
+
+\begin{lstlisting}[style=json, caption={Request: \texttt{POST
+  /api/\apiversion{}/auth/login}.}]
+{
+  "email": "doctor@clinic-a.example.com",
+  "password": "secret1234"
+}
+\end{lstlisting}
+
+\begin{lstlisting}[style=json, caption={Response: HTTP 200 OK on
+  successful authentication.}]
+{
+  "success": true,
+  "message": "Login successful.",
+  "data": {
+    "user": {
+      "id": "9d2b1f4e-3a7c-4e8d-b1f2-3a7c4e8db1f2",
+      "name": "Dr. Sarah Khalil",
+      "email": "doctor@clinic-a.example.com",
+      "role": "doctor",
+      "is_active": true,
+      "clinic_id": "1a2b3c4d-5e6f-7a8b-9c0d-1e2f3a4b5c6d"
+    },
+    "access_token": "eyJ0eXAiOiJKV1Qi...<truncated>",
+    "token_type": "Bearer"
+  }
+}
+\end{lstlisting}
+
+\subsection{Using the Token}
+
+Every subsequent request must present the token in the
+\texttt{Authorization} header:
+
+\begin{lstlisting}[style=bash, caption={Bearer token usage in a curl request.}]
+curl -X GET https://api.example.com/api/v1/doctor/appointments \
+  -H "Accept: application/json" \
+  -H "Authorization: Bearer eyJ0eXAiOiJKV1Qi...<token>"
+\end{lstlisting}
+
+\subsection{Unauthenticated Response}
+
+A request that omits the \texttt{Authorization} header, presents a
+malformed token, or presents a revoked token receives:
+
+\begin{lstlisting}[style=json, caption={Response: HTTP 401 Unauthorized.}]
+{
+  "success": false,
+  "message": "Unauthenticated."
+}
+\end{lstlisting}
+
+%% ─────────────────────────────────────────────────────────────────────────
+\section{The Role-Based Access Control System}
+\label{sec:rbac}
+%% ─────────────────────────────────────────────────────────────────────────
+
+\subsection{Role Hierarchy Definition}
+
+The application defines three discrete, non-overlapping roles. There is
+no role inheritance; a user can hold exactly one role at any given time,
+and the permission surface of that role is strictly bounded.
+
+\begin{table}[h!]
+  \centering
+  \caption{Role hierarchy, scope, and permission surface summary.}
+  \label{tab:role-hierarchy}
+  \renewcommand{\arraystretch}{1.5}
+  \begin{tabularx}{\linewidth}{@{}L{3cm} L{2.8cm} X@{}}
+    \toprule
+    \rowcolor{PrimaryBlue}
+    \tblhdr{Role} & \tblhdr{Enum Value} & \tblhdr{Scope and Summary} \\
+    \midrule
+    Super Administrator
+      & \texttt{super\_admin}
+      & Global scope. Manages clinics and all user accounts.
+        No access to clinical data (appointments, patients,
+        prescriptions). \\
+    \rowalt
+    Doctor
+      & \texttt{doctor}
+      & Clinic-scoped. Manages own schedule, views own
+        appointments, advances appointment status, authors
+        prescriptions. Read-only access to patients. \\
+    Assistant
+      & \texttt{assistant}
+      & Clinic-scoped. Registers and updates patients, books
+        and reschedules appointments, cancels appointments,
+        queries available slots. No access to prescriptions. \\
+    \bottomrule
+  \end{tabularx}
+\end{table}
+
+\begin{importantbox}[Non-Overlapping Permission Surfaces]
+  The role surfaces are deliberately non-overlapping by design. A Super
+  Administrator who authenticates cannot access
+  \route{/api/\apiversion{}/doctor/} or
+  \route{/api/\apiversion{}/assistant/} routes. A Doctor who attempts
+  to access \route{/api/\apiversion{}/admin/} routes will receive a
+  \stforbid{} response. This strict separation ensures that a
+  compromised Super Administrator account cannot be used to forge
+  prescriptions or alter patient records, limiting the blast radius of
+  any single credential compromise.
+\end{importantbox}
+
+\subsection{The RoleMiddleware Implementation}
+
+The \phpclass{RoleMiddleware} is the primary enforcement point for
+role-based access control. It is applied at the route-group level in
+\texttt{routes/api.php}, meaning it executes after \texttt{auth:api}
+has already confirmed the token is valid and populated
+\texttt{request()->user()}.
+
+\begin{lstlisting}[style=php, caption={\texttt{app/Http/Middleware/RoleMiddleware.php}
+  --- Strict role gate using the UserRole enum.}]
+<?php
+
+namespace App\Http\Middleware;
+
+use App\Enums\UserRole;
+use Closure;
+use Illuminate\Http\JsonResponse;
+use Illuminate\Http\Request;
+
+class RoleMiddleware
+{
+    public function handle(Request $request, Closure $next, string ...$roles): JsonResponse|mixed
+    {
+        $user = $request->user();
+
+        $allowedRoles = array_map(
+            fn(string $role) => UserRole::from($role),
+            $roles,
+        );
+
+        if (! in_array($user->role, $allowedRoles, strict: true)) {
+            return response()->json([
+                'success' => false,
+                'message' => 'You do not have permission to perform this action.',
+            ], 403);
+        }
+
+        return $next($request);
+    }
+}
+\end{lstlisting}
+
+\begin{notebox}[Strict Enum Comparison]
+  The \texttt{in\_array} call uses \texttt{strict: true}. Because
+  \texttt{\$user->role} is a \phpclass{UserRole} enum instance (due to
+  Eloquent casting) and \texttt{\$allowedRoles} is an array of
+  \phpclass{UserRole} enum instances, the comparison uses PHP's
+  built-in enum identity semantics. This eliminates any possibility of
+  a type-coercion bypass where a string \texttt{"doctor"} might
+  accidentally match a different type.
+\end{notebox}
+
+\subsection{Route Group Structure and Middleware Stacking}
+
+The three role surfaces are implemented as three separate route groups
+in \texttt{routes/api.php}. Every route within a group inherits the
+entire middleware stack of that group.
+
+\begin{lstlisting}[style=php, caption={\texttt{routes/api.php} ---
+  Route group definitions with stacked middleware.}]
+<?php
+
+use App\Http\Controllers\AuthController;
+use App\Http\Controllers\Admin\ClinicController;
+use App\Http\Controllers\Admin\UserController;
+use App\Http\Controllers\Admin\DashboardController;
+use App\Http\Controllers\Doctor\AppointmentController as DoctorApptController;
+use App\Http\Controllers\Doctor\DoctorScheduleController;
+use App\Http\Controllers\Doctor\PatientController as DoctorPatientController;
+use App\Http\Controllers\Doctor\PrescriptionController;
+use App\Http\Controllers\Assistant\AppointmentController as AssistantApptController;
+use App\Http\Controllers\Assistant\PatientController as AssistantPatientController;
+use App\Http\Controllers\Assistant\AvailableSlotController;
+use Illuminate\Support\Facades\Route;
+
+/*
+|--------------------------------------------------------------------------
+| Public Routes (no authentication required)
+|--------------------------------------------------------------------------
+*/
+Route::prefix('v1')->group(function () {
+
+    Route::prefix('auth')->group(function () {
+        Route::post('login',  [AuthController::class, 'login']);
+    });
+
+    /*
+    |----------------------------------------------------------------------
+    | Authenticated Routes
+    |----------------------------------------------------------------------
+    */
+    Route::middleware('auth:api')->group(function () {
+
+        Route::prefix('auth')->group(function () {
+            Route::post('logout', [AuthController::class, 'logout']);
+            Route::get('me',      [AuthController::class, 'me']);
+        });
+
+        /*
+        |------------------------------------------------------------------
+        | Super Administrator Routes
+        |------------------------------------------------------------------
+        */
+        Route::prefix('admin')
+            ->middleware('role:super_admin')
+            ->group(function () {
+
+            Route::get('dashboard', [DashboardController::class, 'index']);
+
+            Route::apiResource('clinics', ClinicController::class);
+
+            Route::apiResource('users', UserController::class);
+            Route::patch('users/{user}/role',
+                [UserController::class, 'updateRole']);
+            Route::patch('users/{user}/status',
+                [UserController::class, 'updateStatus']);
+        });
+
+        /*
+        |------------------------------------------------------------------
+        | Doctor Routes
+        |------------------------------------------------------------------
+        */
+        Route::prefix('doctor')
+            ->middleware(['role:doctor', 'clinic.scope'])
+            ->group(function () {
+
+            Route::apiResource('schedules', DoctorScheduleController::class);
+
+            Route::get('appointments',
+                [DoctorApptController::class, 'index']);
+            Route::get('appointments/{appointment}',
+                [DoctorApptController::class, 'show']);
+            Route::patch('appointments/{appointment}/status',
+                [DoctorApptController::class, 'updateStatus']);
+
+            Route::get('patients',
+                [DoctorPatientController::class, 'index']);
+            Route::get('patients/{patient}',
+                [DoctorPatientController::class, 'show']);
+
+            Route::apiResource('prescriptions', PrescriptionController::class)
+                ->except(['index', 'destroy']);
+        });
+
+        /*
+        |------------------------------------------------------------------
+        | Assistant Routes
+        |------------------------------------------------------------------
+        */
+        Route::prefix('assistant')
+            ->middleware(['role:assistant', 'clinic.scope'])
+            ->group(function () {
+
+            Route::get('available-slots',
+                [AvailableSlotController::class, 'index']);
+
+            Route::apiResource('patients',
+                AssistantPatientController::class)->except(['destroy']);
+
+            Route::get('appointments',
+                [AssistantApptController::class, 'index']);
+            Route::get('appointments/{appointment}',
+                [AssistantApptController::class, 'show']);
+            Route::post('appointments',
+                [AssistantApptController::class, 'store']);
+            Route::put('appointments/{appointment}',
+                [AssistantApptController::class, 'update']);
+            Route::delete('appointments/{appointment}',
+                [AssistantApptController::class, 'destroy']);
+        });
+    });
+});
+\end{lstlisting}
+
+%% ─────────────────────────────────────────────────────────────────────────
+\section{Clinic Scope Middleware}
+\label{sec:clinic-scope-middleware}
+%% ─────────────────────────────────────────────────────────────────────────
+
+The \phpclass{ClinicScopeMiddleware} runs on every Doctor and Assistant
+route. Its sole responsibility is to inject the authenticated user's
+\texttt{clinic\_id} into the request data bag, overwriting any value
+the client may have provided.
+
+\begin{lstlisting}[style=php, caption={\texttt{app/Http/Middleware/ClinicScopeMiddleware.php}
+  --- Overwrite client-supplied clinic\_id with the authenticated
+  user's authoritative value.}]
+<?php
+
+namespace App\Http\Middleware;
+
+use Closure;
+use Illuminate\Http\Request;
+
+class ClinicScopeMiddleware
+{
+    public function handle(Request $request, Closure $next): mixed
+    {
+        $user = $request->user();
+
+        // Overwrite any client-supplied clinic_id unconditionally.
+        // This prevents cross-clinic data forgery via request body manipulation.
+        $request->merge(['clinic_id' => $user->clinic_id]);
+
+        return $next($request);
+    }
+}
+\end{lstlisting}
+
+%% ─────────────────────────────────────────────────────────────────────────
+\section{Comprehensive Endpoint-to-Role Mapping}
+\label{sec:endpoint-role-map}
+%% ─────────────────────────────────────────────────────────────────────────
+
+The following table catalogues every endpoint in the API and specifies
+the exact authentication and authorisation requirements for each. The
+column headings use the following abbreviations: \textbf{SA} = Super
+Administrator (\texttt{super\_admin}), \textbf{DR} = Doctor
+(\texttt{doctor}), \textbf{AS} = Assistant (\texttt{assistant}),
+\textbf{PUB} = Public (no authentication required).
+
+A tick (\checkmark) indicates the role is permitted. A dash (---) in
+the Role column indicates no authentication is required. Clinic scope
+enforcement (CS) is indicated where the \phpclass{ClinicScopeMiddleware}
+is active in addition to the role gate.
+
+\renewcommand{\arraystretch}{1.35}
+
+\begin{longtable}{@{}L{1.1cm} L{5.4cm} L{2.0cm} C{1.0cm} C{1.0cm} C{1.0cm} C{0.8cm}@{}}
+  \toprule
+  \rowcolor{PrimaryBlue}
+  \tblhdr{Method} &
+  \tblhdr{Endpoint} &
+  \tblhdr{Action} &
+  \tblhdr{SA} &
+  \tblhdr{DR} &
+  \tblhdr{AS} &
+  \tblhdr{PUB} \\
+  \midrule
+  \endfirsthead
+
+  \toprule
+  \rowcolor{PrimaryBlue}
+  \tblhdr{Method} &
+  \tblhdr{Endpoint (cont.)} &
+  \tblhdr{Action} &
+  \tblhdr{SA} &
+  \tblhdr{DR} &
+  \tblhdr{AS} &
+  \tblhdr{PUB} \\
+  \midrule
+  \endhead
+
+  \bottomrule
+  \endfoot
+
+  \multicolumn{7}{@{}l}{\small\textit{--- Authentication ---}} \\[2pt]
+  \mpost    & \route{/api/v1/auth/login}         & Obtain bearer token        & --- & --- & --- & \checkmark \\
+  \rowalt
+  \mpost    & \route{/api/v1/auth/logout}         & Revoke current token       & \checkmark & \checkmark & \checkmark & \\
+  \mget     & \route{/api/v1/auth/me}             & Retrieve own profile       & \checkmark & \checkmark & \checkmark & \\
+  \rowalt
+  \\[-6pt]
+  \multicolumn{7}{@{}l}{\small\textit{--- Super Administrator: Dashboard ---}} \\[2pt]
+  \mget     & \route{/api/v1/admin/dashboard}     & System KPI aggregate       & \checkmark & & & \\
+  \rowalt
+  \\[-6pt]
+  \multicolumn{7}{@{}l}{\small\textit{--- Super Administrator: Clinic Management ---}} \\[2pt]
+  \mget     & \route{/api/v1/admin/clinics}               & List all clinics           & \checkmark & & & \\
+  \rowalt
+  \mpost    & \route{/api/v1/admin/clinics}               & Create clinic              & \checkmark & & & \\
+  \mget     & \route{/api/v1/admin/clinics/\{id\}}        & Retrieve clinic            & \checkmark & & & \\
+  \rowalt
+  \mput     & \route{/api/v1/admin/clinics/\{id\}}        & Update clinic              & \checkmark & & & \\
+  \mdelete  & \route{/api/v1/admin/clinics/\{id\}}        & Delete clinic              & \checkmark & & & \\
+  \rowalt
+  \\[-6pt]
+  \multicolumn{7}{@{}l}{\small\textit{--- Super Administrator: User Management ---}} \\[2pt]
+  \mget     & \route{/api/v1/admin/users}                 & List all users             & \checkmark & & & \\
+  \rowalt
+  \mpost    & \route{/api/v1/admin/users}                 & Create user                & \checkmark & & & \\
+  \mget     & \route{/api/v1/admin/users/\{id\}}          & Retrieve user              & \checkmark & & & \\
+  \rowalt
+  \mput     & \route{/api/v1/admin/users/\{id\}}          & Update user                & \checkmark & & & \\
+  \mdelete  & \route{/api/v1/admin/users/\{id\}}          & Delete user                & \checkmark & & & \\
+  \rowalt
+  \mpatch   & \route{/api/v1/admin/users/\{id\}/role}     & Change user role           & \checkmark & & & \\
+  \mpatch   & \route{/api/v1/admin/users/\{id\}/status}   & Activate / deactivate user & \checkmark & & & \\
+  \rowalt
+  \\[-6pt]
+  \multicolumn{7}{@{}l}{\small\textit{--- Doctor: Schedule Management (CS enforced) ---}} \\[2pt]
+  \mget     & \route{/api/v1/doctor/schedules}            & List own schedules         & & \checkmark & & \\
+  \rowalt
+  \mpost    & \route{/api/v1/doctor/schedules}            & Create schedule entry      & & \checkmark & & \\
+  \mget     & \route{/api/v1/doctor/schedules/\{id\}}     & Retrieve schedule entry    & & \checkmark & & \\
+  \rowalt
+  \mput     & \route{/api/v1/doctor/schedules/\{id\}}     & Update schedule entry      & & \checkmark & & \\
+  \mdelete  & \route{/api/v1/doctor/schedules/\{id\}}     & Delete schedule entry      & & \checkmark & & \\
+  \rowalt
+  \\[-6pt]
+  \multicolumn{7}{@{}l}{\small\textit{--- Doctor: Appointment Management (CS enforced) ---}} \\[2pt]
+  \mget     & \route{/api/v1/doctor/appointments}                    & List own appointments      & & \checkmark & & \\
+  \rowalt
+  \mget     & \route{/api/v1/doctor/appointments/\{id\}}             & Retrieve appointment       & & \checkmark & & \\
+  \mpatch   & \route{/api/v1/doctor/appointments/\{id\}/status}      & Confirm or complete appt.  & & \checkmark & & \\
+  \rowalt
+  \\[-6pt]
+  \multicolumn{7}{@{}l}{\small\textit{--- Doctor: Patient Read Access (CS enforced) ---}} \\[2pt]
+  \mget     & \route{/api/v1/doctor/patients}             & List clinic patients       & & \checkmark & & \\
+  \rowalt
+  \mget     & \route{/api/v1/doctor/patients/\{id\}}      & Retrieve patient record    & & \checkmark & & \\
+  \\[-6pt]
+  \rowalt
+  \multicolumn{7}{@{}l}{\small\textit{--- Doctor: Prescription Authoring (CS enforced) ---}} \\[2pt]
+  \mpost    & \route{/api/v1/doctor/prescriptions}        & Create prescription        & & \checkmark & & \\
+  \rowalt
+  \mget     & \route{/api/v1/doctor/prescriptions/\{id\}} & Retrieve prescription      & & \checkmark & & \\
+  \mput     & \route{/api/v1/doctor/prescriptions/\{id\}} & Update prescription        & & \checkmark & & \\
+  \rowalt
+  \\[-6pt]
+  \multicolumn{7}{@{}l}{\small\textit{--- Assistant: Slot Availability (CS enforced) ---}} \\[2pt]
+  \mget     & \route{/api/v1/assistant/available-slots}              & Query available slots      & & & \checkmark & \\
+  \rowalt
+  \\[-6pt]
+  \multicolumn{7}{@{}l}{\small\textit{--- Assistant: Patient Management (CS enforced) ---}} \\[2pt]
+  \mget     & \route{/api/v1/assistant/patients}          & List clinic patients       & & & \checkmark & \\
+  \rowalt
+  \mpost    & \route{/api/v1/assistant/patients}          & Register new patient       & & & \checkmark & \\
+  \mget     & \route{/api/v1/assistant/patients/\{id\}}   & Retrieve patient record    & & & \checkmark & \\
+  \rowalt
+  \mput     & \route{/api/v1/assistant/patients/\{id\}}   & Update patient record      & & & \checkmark & \\
+  \\[-6pt]
+  \rowalt
+  \multicolumn{7}{@{}l}{\small\textit{--- Assistant: Appointment Management (CS enforced) ---}} \\[2pt]
+  \mget     & \route{/api/v1/assistant/appointments}                 & List clinic appointments   & & & \checkmark & \\
+  \rowalt
+  \mget     & \route{/api/v1/assistant/appointments/\{id\}}          & Retrieve appointment       & & & \checkmark & \\
+  \mpost    & \route{/api/v1/assistant/appointments}                  & Book appointment           & & & \checkmark & \\
+  \rowalt
+  \mput     & \route{/api/v1/assistant/appointments/\{id\}}           & Reschedule appointment     & & & \checkmark & \\
+  \mdelete  & \route{/api/v1/assistant/appointments/\{id\}}           & Cancel appointment         & & & \checkmark & \\
+\end{longtable}
+
+\begin{notebox}[Clinic Scope (CS) Enforcement]
+  Every row in the Doctor and Assistant sections carries implicit clinic
+  scope enforcement via \phpclass{ClinicScopeMiddleware}. Even if an
+  endpoint is listed as accessible to a Doctor, a Doctor from Clinic~A
+  cannot access resources belonging to Clinic~B. Ownership is validated
+  at the controller layer for resource-by-UUID endpoints and at the
+  query layer (via an automatic \texttt{where('clinic\_id', ...)} scope)
+  for list endpoints.
+\end{notebox}
+
+%% ─────────────────────────────────────────────────────────────────────────
+\section{Privilege Escalation: Threat Model and Defences}
+\label{sec:privilege-escalation}
+%% ─────────────────────────────────────────────────────────────────────────
+
+Privilege escalation is the class of attacks in which an authenticated
+principal gains access to resources or capabilities beyond those
+explicitly granted to their role. The two canonical forms are
+\textbf{vertical privilege escalation} (gaining a higher-privilege
+role's capabilities) and \textbf{horizontal privilege escalation}
+(accessing another principal's data within the same role).
+
+\subsection{Vertical Privilege Escalation}
+
+Vertical privilege escalation occurs when a lower-privileged user
+successfully invokes an endpoint that requires a higher-privileged role,
+or when a user is able to elevate their own role.
+
+\subsubsection{Attack Vector 1: Role Forgery via Request Body}
+
+An attacker who authenticates as an Assistant might craft a request body
+that includes \texttt{"role": "super\_admin"}, attempting to trick the
+application into treating the request as if it originated from a higher
+role.
+
+\textbf{Defence.} The \phpclass{RoleMiddleware} reads the role
+exclusively from \texttt{\$request->user()->role}, which is the
+\texttt{UserRole} enum hydrated from the database record belonging to
+the authenticated token owner. The request body is never consulted for
+role determination. A \texttt{"role"} field in the request body is
+simply ignored or causes a validation error if the endpoint does not
+accept it.
+
+\subsubsection{Attack Vector 2: Self-Role Elevation via the Admin API}
+
+A Super Administrator account could theoretically be used to elevate a
+lower-privileged account's role if there were no guards on the role
+change endpoint. More critically, a Super Administrator could attempt to
+demote their own account to a Doctor and re-promote it to bypass audit
+logs, or could be tricked into demoting their own account, locking
+themselves (and potentially the organisation) out of administrative
+access.
+
+\textbf{Defence.} The \phpclass{UserController}'s \texttt{updateRole}
+action contains an explicit self-demotion guard:
+
+\begin{lstlisting}[style=php, caption={Self-demotion guard in
+  \texttt{UserController::updateRole()}.}]
+public function updateRole(UpdateUserRoleRequest $request, User $user): JsonResponse
+{
+    if ($user->id === $request->user()->id) {
+        throw new SelfDemotionException();
+    }
+
+    $updatedUser = $this->userService->updateRole(
+        user: $user,
+        role: UserRole::from($request->validated('role')),
+    );
+
+    return $this->successResponse(
+        data:    new UserResource($updatedUser),
+        message: 'User role updated successfully.',
+    );
+}
+\end{lstlisting}
+
+The \phpclass{SelfDemotionException} renders as a \stforbid{} response
+with the message \textit{``You cannot change your own role.''} This
+prevents accidental or malicious self-demotion while still allowing a
+Super Administrator to manage all other accounts freely.
+
+\subsubsection{Attack Vector 3: Route Traversal Across Role Prefixes}
+
+An authenticated Doctor might construct a request to a Super
+Administrator endpoint such as \route{POST /api/\apiversion{}/admin/users},
+hoping that the authentication middleware alone would admit the request.
+
+\textbf{Defence.} The \phpclass{RoleMiddleware} is applied at the route
+group level, meaning it executes for every route within the group
+regardless of the HTTP method or path specifics. A Doctor's token is
+valid for the \texttt{auth:api} middleware but fails the
+\texttt{role:super\_admin} check and receives a \stforbid{} response.
+The role check happens before the controller is invoked, so the attack
+is terminated in the middleware pipeline.
+
+\begin{table}[h!]
+  \centering
+  \caption{Vertical privilege escalation attack vectors and their mitigations.}
+  \label{tab:vert-escalation}
+  \renewcommand{\arraystretch}{1.5}
+  \begin{tabularx}{\linewidth}{@{}L{4.5cm} X@{}}
+    \toprule
+    \rowcolor{PrimaryBlue}
+    \tblhdr{Attack Vector} & \tblhdr{Mitigation} \\
+    \midrule
+    Role forgery via request body
+      & Role read exclusively from \texttt{\$request->user()->role};
+        request body \texttt{role} field is ignored. \\
+    \rowalt
+    Self-demotion / self-role-change
+      & Explicit \texttt{\$user->id === \$request->user()->id} guard in
+        \texttt{updateRole()}; throws \phpclass{SelfDemotionException}
+        (\stforbid{}). \\
+    Route traversal across role prefixes
+      & \phpclass{RoleMiddleware} applied at route-group level; executes
+        before any controller code is reached. \\
+    \rowalt
+    Credential theft with deactivated account
+      & \texttt{is\_active} checked after credential verification in
+        \phpclass{AuthService}; \phpclass{AccountDeactivatedException}
+        thrown (\stforbid{}). \\
+    Token reuse after logout
+      & Passport's server-side revocation sets \texttt{revoked = 1} in
+        \texttt{oauth\_access\_tokens}; subsequent requests with the
+        same token receive \stunauth{}. \\
+    \bottomrule
+  \end{tabularx}
+\end{table}
+
+\subsection{Horizontal Privilege Escalation}
+
+Horizontal privilege escalation occurs when an authenticated user
+accesses, modifies, or deletes data belonging to another principal
+\emph{within the same role level}. In the context of this API, the two
+most critical horizontal escalation surfaces are cross-clinic data access
+and cross-doctor prescription access.
+
+\subsubsection{Attack Vector 4: Cross-Clinic Resource Access by UUID Guessing}
+
+All primary keys in the system are UUID v4 values. A Doctor at Clinic~A
+might attempt to enumerate patient records at Clinic~B by guessing or
+obtaining UUIDs (e.g.\ from a shared infrastructure log) and supplying
+them to the \route{GET /api/\apiversion{}/doctor/patients/\{id\}} endpoint.
+
+\textbf{Defence.} Laravel's route model binding resolves the UUID to an
+Eloquent model instance. The controller then compares the resolved model's
+\texttt{clinic\_id} against the authenticated user's \texttt{clinic\_id}
+(which was injected by \phpclass{ClinicScopeMiddleware}):
+
+\begin{lstlisting}[style=php, caption={Cross-clinic ownership check in a
+  Doctor route controller.}]
+public function show(Request $request, Patient $patient): JsonResponse
+{
+    if ($patient->clinic_id !== $request->input('clinic_id')) {
+        throw new ClinicScopeViolationException();
+    }
+
+    return $this->successResponse(
+        data:    new PatientResource($patient),
+        message: 'Patient retrieved successfully.',
+    );
+}
+\end{lstlisting}
+
+The \phpclass{ClinicScopeViolationException} renders as a \stforbid{}
+response. Critically, the response does not differ from a genuine
+\stforbid{} triggered by a role mismatch, so the attacker cannot
+distinguish between ``this resource does not exist'' and ``this resource
+exists but you cannot access it.'' This prevents oracle-style
+enumeration.
+
+\subsubsection{Attack Vector 5: Cross-Doctor Prescription Access}
+
+A prescription is authored by a specific Doctor and is associated with
+a specific appointment. A different Doctor at the same clinic should not
+be able to view or modify another Doctor's prescription, even though
+they share the same role and the same clinic scope.
+
+\textbf{Defence.} The \phpclass{PrescriptionController} implements an
+additional ownership check beyond the clinic scope gate:
+
+\begin{lstlisting}[style=php, caption={Cross-doctor ownership check in
+  \texttt{PrescriptionController}.}]
+public function show(Request $request, Prescription $prescription): JsonResponse
+{
+    // Layer 1: clinic scope (enforced by ClinicScopeMiddleware + check)
+    if ($prescription->appointment->clinic_id !== $request->input('clinic_id')) {
+        throw new ClinicScopeViolationException();
+    }
+
+    // Layer 2: doctor ownership (only the authoring doctor may view)
+    if ($prescription->appointment->doctor_id !== $request->user()->id) {
+        throw new ClinicScopeViolationException();
+    }
+
+    return $this->successResponse(
+        data:    new PrescriptionResource($prescription->load('items')),
+        message: 'Prescription retrieved successfully.',
+    );
+}
+\end{lstlisting}
+
+\subsubsection{Attack Vector 6: Cross-Clinic Data Injection via Request
+  Body Forgery}
+
+An Assistant at Clinic~A might craft a \route{POST} request to
+\route{/api/\apiversion{}/assistant/patients} with
+\texttt{"clinic\_id": "<uuid-of-clinic-b>"} in the JSON body, attempting
+to create a patient record in a different clinic's namespace.
+
+\textbf{Defence.} The \phpclass{ClinicScopeMiddleware} calls
+\texttt{\$request->merge(['clinic\_id' => \$user->clinic\_id])} before
+the request reaches the form request validator or the controller. The
+\texttt{merge()} call overwrites any existing \texttt{clinic\_id} key
+in the request data bag with the authoritative value from the
+authenticated user's database record. The client-supplied value is
+silently discarded.
+
+\subsubsection{Attack Vector 7: Appointment Double-Booking via Race Condition}
+
+Two Assistants at the same clinic might simultaneously submit booking
+requests for the same doctor, date, and time slot. Without a
+synchronisation mechanism, both requests could pass the slot availability
+check (both read an empty slot) and then both write a record, resulting
+in two patients occupying the same appointment.
+
+\textbf{Defence.} The \phpclass{AppointmentService} acquires a
+distributed cache lock before performing the slot check and write:
+
+\begin{lstlisting}[style=php, caption={Distributed lock in
+  \texttt{AppointmentService::book()} to prevent double-booking.}]
+$lockKey = "appointment_slot:{$doctorId}:{$date}:{$startTime}";
+
+$lock = Cache::lock($lockKey, seconds: 10);
+
+if (! $lock->get()) {
+    throw new AppointmentConflictException();
+}
+
+try {
+    $this->validateSlotAvailability($doctorId, $date, $startTime);
+    $appointment = $this->appointmentRepository->create($data);
+    $lock->release();
+    return $appointment;
+} catch (\Throwable $e) {
+    $lock->release();
+    throw $e;
+}
+\end{lstlisting}
+
+As a second line of defence, the database enforces a unique composite
+index on \texttt{(doctor\_id, appointment\_date, start\_time)}, so even
+if the lock is somehow bypassed, the database write will fail with a
+unique constraint violation, which the repository layer converts to an
+\phpclass{AppointmentConflictException} (\stconflict{}).
+
+\begin{table}[h!]
+  \centering
+  \caption{Horizontal privilege escalation attack vectors and their mitigations.}
+  \label{tab:horiz-escalation}
+  \renewcommand{\arraystretch}{1.5}
+  \begin{tabularx}{\linewidth}{@{}L{4.5cm} X@{}}
+    \toprule
+    \rowcolor{PrimaryBlue}
+    \tblhdr{Attack Vector} & \tblhdr{Mitigation} \\
+    \midrule
+    Cross-clinic resource access by UUID
+      & Explicit \texttt{clinic\_id} ownership check in every
+        resource-by-UUID controller action; throws
+        \phpclass{ClinicScopeViolationException} (\stforbid{}).
+        Response is indistinguishable from a role mismatch to prevent
+        oracle enumeration. \\
+    \rowalt
+    Cross-doctor prescription access
+      & Secondary \texttt{doctor\_id} ownership check in
+        \phpclass{PrescriptionController} beyond the clinic scope
+        gate; same exception and response. \\
+    Cross-clinic data injection via body
+      & \phpclass{ClinicScopeMiddleware} overwrites client-supplied
+        \texttt{clinic\_id} with the authenticated user's authoritative
+        value before the controller is reached. \\
+    \rowalt
+    Appointment double-booking race condition
+      & Distributed \texttt{Cache::lock()} around the slot check and
+        write in \phpclass{AppointmentService}; unique composite index
+        on \texttt{(doctor\_id, appointment\_date, start\_time)} as
+        final database-level backstop. \\
+    Patient registration in another clinic
+      & Same as cross-clinic body injection above; \texttt{clinic\_id}
+        is always sourced from the authenticated user, never from the
+        client payload. \\
+    \bottomrule
+  \end{tabularx}
+\end{table}
+
+%% ─────────────────────────────────────────────────────────────────────────
+\section{The AccountDeactivatedException Flow}
+\label{sec:deactivated-account}
+%% ─────────────────────────────────────────────────────────────────────────
+
+User accounts carry an \texttt{is\_active} boolean flag that can be set
+to \texttt{false} by a Super Administrator via the
+\route{PATCH /api/\apiversion{}/admin/users/\{id\}/status} endpoint.
+Deactivation is a soft mechanism: the user record is retained in the
+database and all historical data (appointments, prescriptions) remains
+intact and attributable to the account. Only the ability to obtain a new
+token is blocked.
+
+It is important to note that deactivation alone does not revoke tokens
+that were issued \emph{before} the account was deactivated. Revoking
+pre-existing tokens requires a separate administrative action: the Super
+Administrator must also call the token revocation endpoint (or, if not
+yet implemented, the \texttt{oauth\_access\_tokens} table must be
+updated directly to set \texttt{revoked = 1} for all tokens belonging
+to the user).
+
+\begin{warningbox}[Token Revocation on Deactivation]
+  The current implementation blocks new token issuance for deactivated
+  accounts but does not automatically revoke existing tokens. If
+  immediate session termination is required (e.g.\ a staff member is
+  dismissed), the Super Administrator must both deactivate the account
+  and explicitly trigger token revocation. A future enhancement should
+  atomically revoke all active tokens when \texttt{is\_active} is set
+  to \texttt{false}.
+\end{warningbox}
+
+\begin{lstlisting}[style=php, caption={\texttt{app/Exceptions/AccountDeactivatedException.php}
+  --- Renders as HTTP 403 Forbidden.}]
+<?php
+
+namespace App\Exceptions;
+
+use Exception;
+use Illuminate\Http\JsonResponse;
+
+class AccountDeactivatedException extends Exception
+{
+    public function render(): JsonResponse
+    {
+        return response()->json([
+            'success' => false,
+            'message' => 'Your account has been deactivated. '
+                       . 'Please contact your administrator.',
+        ], 403);
+    }
+}
+\end{lstlisting}
+
+%% ─────────────────────────────────────────────────────────────────────────
+\section{Security Properties: Summary}
+\label{sec:auth-security-summary}
+%% ─────────────────────────────────────────────────────────────────────────
+
+The table below provides a consolidated view of the security properties
+provided by the authentication and authorisation subsystem.
+
+\begin{table}[h!]
+  \centering
+  \caption{Security properties of the authentication and authorisation
+    subsystem and the mechanism that provides each property.}
+  \label{tab:security-properties}
+  \renewcommand{\arraystretch}{1.5}
+  \begin{tabularx}{\linewidth}{@{}L{4.2cm} X@{}}
+    \toprule
+    \rowcolor{PrimaryBlue}
+    \tblhdr{Security Property} & \tblhdr{Mechanism} \\
+    \midrule
+    Token integrity
+      & RSA-signed Personal Access Tokens issued by Laravel Passport;
+        tampering with the token payload invalidates the signature. \\
+    \rowalt
+    Server-side revocation
+      & \texttt{revoked} flag in \texttt{oauth\_access\_tokens};
+        logout atomically invalidates the token regardless of its
+        remaining cryptographic validity period. \\
+    Stateless authentication
+      & No server-side session state; the bearer token is the sole proof
+        of identity on every request. Enables horizontal scaling. \\
+    \rowalt
+    Role-based access control
+      & \phpclass{RoleMiddleware} enforces non-overlapping, strictly
+        bounded permission surfaces at the route-group level. \\
+    Clinic data isolation
+      & \phpclass{ClinicScopeMiddleware} injects authoritative
+        \texttt{clinic\_id}; explicit ownership checks in all
+        resource-by-UUID controllers. \\
+    \rowalt
+    Vertical escalation prevention
+      & Role read from authenticated token owner's DB record only;
+        self-demotion guard; role middleware applied before controller
+        entry. \\
+    Horizontal escalation prevention
+      & Two-layer clinic scope enforcement (middleware injection +
+        controller ownership check); secondary doctor-ownership check
+        for prescriptions. \\
+    \rowalt
+    User enumeration resistance
+      & \phpclass{ClinicScopeViolationException} produces an identical
+        \stforbid{} response for both ``wrong clinic'' and ``role
+        mismatch'' cases; deactivated account message reveals nothing
+        about other accounts. \\
+    Double-booking prevention
+      & Distributed \texttt{Cache::lock()} around the book/reschedule
+        write path; unique DB index as final backstop. \\
+    \rowalt
+    Password confidentiality
+      & Passwords stored as Bcrypt hashes via Laravel's built-in
+        \texttt{hashed} cast; plaintext is never persisted or logged. \\
+    Token confidentiality
+      & Raw token returned to client exactly once at issuance; server
+        stores only a SHA-256 hash of the secret component in
+        \texttt{oauth\_access\_tokens}. \\
+    \bottomrule
+  \end{tabularx}
+\end{table}

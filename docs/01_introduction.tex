@@ -1,0 +1,1178 @@
+%% ============================================================
+%%  Chapter 1 — Introduction
+%%  01_introduction.tex
+%% ============================================================
+\chapter{Introduction}
+
+\chapterintro{%
+  This chapter establishes the full business and technical context of the
+  Clinic Management API. It covers the executive summary, the technology
+  stack, the RESTful design philosophy, and an exhaustive description of
+  every entity within the core business domain. Readers who are already
+  familiar with the project may skip to Chapter~\ref{chap:architecture}
+  for the system architecture breakdown.
+}
+
+%% ─────────────────────────────────────────────────────────────────────────
+\section{Executive Summary}
+%% ─────────────────────────────────────────────────────────────────────────
+
+The Clinic Management API is an enterprise-grade, RESTful backend system
+built on the Laravel framework. It is designed to serve as the single
+authoritative data layer for one or more medical clinic operations. The
+system digitises and enforces the complete patient journey: from first
+registration, through appointment scheduling and confirmation, to the
+issuance of a formal doctor's prescription.
+
+At its core, the API solves a fundamental coordination problem present in
+any multi-stakeholder clinical environment. Without a unified system,
+scheduling is handled via telephone or paper registers, patient records
+are stored in disparate file systems, and prescriptions are written by
+hand with no linkage to the underlying appointment. These fragmented
+workflows introduce avoidable medical errors, administrative overhead,
+and a complete absence of an auditable data trail.
+
+The Clinic Management API replaces all of these manual processes with a
+structured, role-aware, and cryptographically authenticated JSON API.
+Every action --- listing available appointment slots, booking a
+consultation, updating a patient's record, or issuing a multi-item
+prescription --- is mediated by explicit business rules enforced at the
+service layer, not merely at the database constraint level. This
+distinction is deliberate and architecturally significant: business rules
+that live in the database are invisible to the application; business rules
+that live in the service layer are testable, versionable, and auditable.
+
+The system supports three discrete user roles: \textbf{Super Administrator},
+\textbf{Doctor}, and \textbf{Assistant}. Each role carries a precisely
+defined permission surface. A Doctor may confirm or complete appointments
+that belong to them but cannot create new clinic records or modify another
+doctor's prescriptions. An Assistant may register new patients and book
+appointments on a patient's behalf but cannot alter appointment status
+beyond cancellation or issue prescriptions. A Super Administrator operates
+globally across all clinics and is the only actor authorised to manage
+the user roster itself.
+
+The API is designed to be stateless, horizontally scalable, and fully
+decoupled from any frontend technology. A mobile application, a web
+dashboard, and a third-party electronic health record system can all
+consume the same endpoints simultaneously, each receiving the same
+consistently structured JSON envelope.
+
+%% ─────────────────────────────────────────────────────────────────────────
+\section{Purpose and Scope of This Document}
+%% ─────────────────────────────────────────────────────────────────────────
+
+This technical documentation manual serves four distinct audiences, each
+with different information requirements.
+
+\begin{enumerate}
+  \item \textbf{Backend Engineers} maintaining or extending the API need a
+    precise reference for the repository-service-controller layering, the
+    custom exception hierarchy, and the business rules encoded in each
+    service class.
+
+  \item \textbf{QA Engineers} writing or reviewing the PHPUnit feature test
+    suite need a complete mapping from business requirement to test case,
+    including the exact HTTP method, route, request payload, expected
+    response envelope, and HTTP status code for every scenario.
+
+  \item \textbf{Frontend and Mobile Developers} integrating against the API
+    need the endpoint catalogue in Chapter~\ref{chap:endpoints}, the
+    authentication flow in Chapter~\ref{chap:auth}, and the canonical JSON
+    response envelope format described in Section~\ref{sec:response-envelope}.
+
+  \item \textbf{Technical Architects} evaluating the system need the
+    architectural diagrams, the database entity-relationship analysis, and
+    the exception handling strategy to assess compliance with their
+    organisation's engineering standards.
+\end{enumerate}
+
+The scope of this document is limited to the backend API layer. It does
+not cover any specific frontend or mobile client implementation, CI/CD
+pipeline configuration, server provisioning, or HTTPS termination
+strategy, all of which are treated as deployment concerns external to the
+application itself.
+
+The document is structured to be read sequentially on first pass and
+used as a reference thereafter. Each chapter is self-contained, with
+cross-references provided wherever concepts from another chapter are
+relevant.
+
+%% ─────────────────────────────────────────────────────────────────────────
+\section{Document Structure Overview}
+%% ─────────────────────────────────────────────────────────────────────────
+
+\begin{table}[h!]
+  \centering
+  \caption{Chapter map and primary audience for each section.}
+  \label{tab:chapter-map}
+  \renewcommand{\arraystretch}{1.4}
+  \begin{tabularx}{\linewidth}{@{}C{0.5cm} L{4.5cm} X L{3.2cm}@{}}
+    \toprule
+    \rowcolor{PrimaryBlue}
+    \tblhdr{\#} & \tblhdr{Chapter} & \tblhdr{Content Summary} & \tblhdr{Primary Audience} \\
+    \midrule
+    1 & Introduction          & Business domain, tech stack, conventions          & All \\
+    \rowalt
+    2 & System Architecture   & Layered design, middleware pipeline, directory
+                                structure                                          & Engineers, Architects \\
+    3 & Database \& Models    & ERD, migrations, Eloquent models, relationships,
+                                UUID strategy                                     & Engineers \\
+    \rowalt
+    4 & Authentication \& Roles & Passport OAuth2 flow, RBAC, middleware chain,
+                                  clinic scope enforcement                        & Engineers, Frontend \\
+    5 & API Endpoints         & Full endpoint catalogue with request/response
+                                examples for every route                          & All \\
+    \rowalt
+    6 & Exception Handling    & Custom exception hierarchy, HTTP status mapping,
+                                bootstrap registration                            & Engineers, QA \\
+    7 & Testing Strategy      & PHPUnit configuration, factory design, base test
+                                class, seeding strategy                           & QA, Engineers \\
+    \rowalt
+    8 & Test Cases \& Validation & Complete test case matrix: happy path (Phase~1)
+                                   and alternative scenarios (Phase~2)            & QA \\
+    \bottomrule
+  \end{tabularx}
+\end{table}
+
+%% ─────────────────────────────────────────────────────────────────────────
+\section{Technology Stack}
+\label{sec:tech-stack}
+%% ─────────────────────────────────────────────────────────────────────────
+
+The Clinic Management API is built on a tightly integrated, open-source
+technology stack. Every component was chosen for its maturity, its
+community support, its security track record, and its first-class
+integration with the Laravel ecosystem.
+
+%% ── §4.1 ─────────────────────────────────────────────────────────────────
+\subsection{Runtime Environment: PHP 8.4}
+
+PHP 8.4 is the minimum required runtime version for this application. The
+choice of PHP 8.4 over earlier minor versions is not arbitrary; it
+unlocks several language features that are used pervasively throughout
+the codebase.
+
+\textbf{Named arguments} allow service-class constructors and factory
+state methods to be called with keyword syntax, improving readability in
+deeply nested calls without requiring intermediate variables.
+
+\textbf{Union types} and \textbf{intersection types} allow method
+signatures to be precise about which concrete types they accept and
+return, eliminating an entire category of runtime type errors that would
+otherwise only be discovered in production.
+
+\textbf{Readonly properties} (introduced in PHP 8.1 and refined in 8.2
+and beyond) are used in value objects and data-transfer objects to
+guarantee that state cannot be mutated after construction, which enforces
+immutability at the language level rather than by convention.
+
+\textbf{Fibers} (PHP 8.1) provide the coroutine primitive that underpins
+Laravel's asynchronous queue and job infrastructure, which is leveraged by
+the appointment confirmation job system described in
+Section~\ref{sec:jobs}.
+
+\textbf{Enums} (PHP 8.1) are the mechanism by which the application
+models \texttt{UserRole} and \texttt{AppointmentStatus} as first-class
+types rather than magic strings. This prevents an entire class of
+runtime errors caused by mis-typed status values and integrates cleanly
+with Eloquent's attribute casting system.
+
+\begin{table}[h!]
+  \centering
+  \caption{PHP features used in the Clinic Management API.}
+  \label{tab:php-features}
+  \renewcommand{\arraystretch}{1.4}
+  \begin{tabularx}{\linewidth}{@{}L{3.8cm} C{2.2cm} X@{}}
+    \toprule
+    \rowcolor{PrimaryBlue}
+    \tblhdr{Feature} & \tblhdr{Introduced} & \tblhdr{Usage in This Project} \\
+    \midrule
+    Enums                    & PHP 8.1 & \texttt{UserRole}, \texttt{AppointmentStatus},
+                                         \texttt{Gender} \\
+    \rowalt
+    Readonly Properties      & PHP 8.1 & DTO and value objects \\
+    Named Arguments          & PHP 8.0 & Factory state methods, service constructors \\
+    \rowalt
+    Union \& Nullable Types  & PHP 8.0 & Repository method signatures \\
+    Match Expressions        & PHP 8.0 & Status transition guards \\
+    \rowalt
+    Constructor Promotion    & PHP 8.0 & All service and repository classes \\
+    Fibers                   & PHP 8.1 & Queue job infrastructure \\
+    \rowalt
+    First-class Callables    & PHP 8.1 & Collection \texttt{map()} and
+                                         \texttt{filter()} chains \\
+    \bottomrule
+  \end{tabularx}
+\end{table}
+
+%% ── §4.2 ─────────────────────────────────────────────────────────────────
+\subsection{Web Framework: Laravel 12}
+
+Laravel 12 is the application framework. Laravel provides the HTTP
+routing layer, the dependency injection container, the Eloquent ORM, the
+queue system, the cache abstraction, and the testing harness. The version
+12 release series is built on top of the Symfony HTTP Foundation component,
+ensuring standards compliance with PSR-7 request/response semantics while
+adding the rich developer experience that the Laravel ecosystem is known for.
+
+The key Laravel subsystems in active use are as follows.
+
+\textbf{Routing.} All API routes are defined in
+\texttt{routes/api.php} and are prefixed with \texttt{/api/\apiversion{}/}
+by the framework's route service provider. Route model binding is used
+throughout the application to automatically resolve Eloquent model
+instances from UUID path segments, eliminating repetitive
+\texttt{findOrFail} boilerplate from controller methods.
+
+\textbf{Middleware Pipeline.} Every request passes through a layered
+middleware stack before reaching its controller. The \texttt{auth:api}
+middleware (provided by Laravel Passport) authenticates the bearer token.
+The custom \texttt{RoleMiddleware} enforces role-based access control.
+The custom \texttt{ClinicScopeMiddleware} injects the authenticated
+user's \texttt{clinic\_id} into the request data bag, preventing doctors
+and assistants from supplying a fabricated clinic identifier in their
+JSON payload.
+
+\textbf{Form Request Validation.} Dedicated \texttt{FormRequest} classes
+are used for every mutating endpoint. This separates validation logic
+from controller logic and provides automatic 422 responses with
+structured field-level error messages when validation fails, without a
+single explicit \texttt{if} statement in any controller.
+
+\textbf{Eloquent ORM.} Laravel's active-record ORM is used for all
+database interactions. Models declare their relationships (one-to-many,
+belongs-to) as methods, enabling eager loading of related data to
+avoid N+1 query problems. The \texttt{HasUuids} trait is applied to
+every model to ensure that primary keys are generated as UUIDs rather
+than auto-incrementing integers.
+
+\textbf{Service Container.} All services, repositories, and third-party
+clients are resolved through Laravel's dependency injection container.
+Constructor injection is used universally, which enables clean unit
+testing through mock substitution and ensures that no service class
+instantiates its own dependencies.
+
+\textbf{Cache Abstraction.} The appointment slot availability system
+uses Laravel's cache facade with a Redis or file driver (configurable via
+\texttt{CACHE\_DRIVER}) to memoise the result of expensive slot computation
+for a five-minute window. A distributed cache lock (\texttt{Cache::lock})
+is used during the booking write path to prevent race conditions that
+could result in two patients booking the same time slot simultaneously.
+
+\textbf{Queue System.} The \texttt{SendAppointmentConfirmation} job is
+dispatched asynchronously after every successful booking. The queue
+driver is configurable and defaults to the synchronous driver in the
+testing environment to prevent test isolation issues.
+
+%% ── §4.3 ─────────────────────────────────────────────────────────────────
+\subsection{Database: MySQL 8.0}
+
+MySQL 8.0 is the sole supported database engine for this application.
+This is not a portability oversight; it is a deliberate design decision
+that enables the use of MySQL-specific features that provide measurable
+value in a production clinical environment.
+
+\textbf{FULLTEXT Indexes.} The \texttt{patients} table has a FULLTEXT
+index defined across the \texttt{name} and \texttt{phone} columns. The
+patient search endpoint uses \texttt{whereFullText} to perform
+natural-language full-text search, which is significantly more
+performant than \texttt{LIKE '\%...\%'} queries on large patient rosters
+and is a MySQL-specific capability not available in SQLite.
+
+\textbf{UUID Primary Keys.} All primary keys are stored as
+\texttt{CHAR(36)} columns containing RFC~4122 UUID v4 values generated
+by PHP's \texttt{Str::uuid()} method via the Eloquent
+\texttt{HasUuids} trait. This choice has several consequences. UUIDs are
+safe to expose in API responses because they reveal nothing about the
+total number of records, the insertion order, or the internal
+structure of the database. They also enable records to be created in a
+distributed environment (multiple application servers, offline-first
+mobile clients) without a centralised auto-increment authority.
+
+\textbf{TIME Column Type.} Doctor schedule start and end times and
+appointment slot times are stored as MySQL's native \texttt{TIME} type.
+MySQL returns TIME values over the wire as strings formatted as
+\texttt{HH:MM:SS}. The application normalises these to \texttt{HH:MM}
+format in the repository layer before business logic comparisons, a
+subtlety that is documented in detail in
+Section~\ref{sec:time-normalisation}.
+
+\textbf{Unique Composite Indexes.} The \texttt{appointments} table
+carries a unique index on the composite of
+\texttt{(doctor\_id, appointment\_date, start\_time)}, enforced at the
+database level as a last line of defence against double-booking, even if
+the application-layer cache-lock strategy is somehow bypassed.
+
+\textbf{Referential Integrity.} All foreign key relationships are
+enforced with \texttt{FOREIGN KEY} constraints and
+\texttt{ON DELETE CASCADE} or \texttt{ON DELETE RESTRICT} semantics as
+appropriate to prevent orphaned records.
+
+%% ── §4.4 ─────────────────────────────────────────────────────────────────
+\subsection{Authentication: Laravel Passport (OAuth2)}
+
+Authentication is handled exclusively by Laravel Passport, which
+implements the full OAuth2 specification on top of the application's
+user model. The API uses the \textbf{Personal Access Token} (PAT) grant
+type, which is the appropriate OAuth2 grant for a first-party API where
+the client and the server are the same organisation.
+
+When a user authenticates via the \texttt{POST /api/\apiversion{}/auth/login}
+endpoint, the \texttt{AuthService} verifies the provided credentials
+against the hashed password in the database, checks the
+\texttt{is\_active} flag, and then calls \texttt{createToken()} on the
+Eloquent user model. Passport generates a cryptographically signed
+access token and persists a token record to its \texttt{oauth\_access\_tokens}
+table. The raw token string is returned to the client only once; it is
+never stored in plaintext on the server.
+
+On every subsequent request, the client presents the token in the HTTP
+\texttt{Authorization} header as a Bearer token. The \texttt{auth:api}
+Passport middleware validates the token's signature, checks whether the
+token has been revoked, and populates \texttt{request()->user()} with
+the authenticated Eloquent model instance. All of this occurs before the
+request enters the application's own middleware pipeline.
+
+Token revocation (logout) is achieved by calling \texttt{revoke()} on
+the token instance, which sets the \texttt{revoked} flag in the
+\texttt{oauth\_access\_tokens} table. Subsequent requests bearing the
+same token will be rejected with a \stunauth{} response.
+
+%% ── §4.5 ─────────────────────────────────────────────────────────────────
+\subsection{Testing Framework: PHPUnit 11}
+
+The application ships with a comprehensive PHPUnit 11 feature test suite
+comprising \testcount{} passing tests and 254 assertions. All tests are
+\textbf{feature tests} that exercise the full HTTP stack from the HTTP
+request layer down to the MySQL database, ensuring that the integration
+between the routing layer, middleware, controllers, services, repositories,
+and Eloquent models is continuously verified.
+
+The test suite uses the \texttt{RefreshDatabase} trait, which wraps
+each test in a database transaction that is rolled back after the test
+completes, leaving the database in a clean state for the next test.
+Because the application is configured to use a real MySQL database
+(not an in-memory SQLite substitute), the tests validate MySQL-specific
+behaviour such as FULLTEXT search and TIME column formatting.
+
+Test data is generated exclusively through Laravel model factories, with
+dedicated factories for every model in the system. Factory state methods
+(\texttt{superAdmin()}, \texttt{doctor()}, \texttt{assistant()},
+\texttt{forClinic()}, \texttt{inactive()}) provide a clean, composable
+DSL for expressing complex test data scenarios.
+
+\begin{table}[h!]
+  \centering
+  \caption{Full technology stack summary.}
+  \label{tab:tech-stack}
+  \renewcommand{\arraystretch}{1.5}
+  \begin{tabularx}{\linewidth}{@{}L{3.8cm} L{3.2cm} X@{}}
+    \toprule
+    \rowcolor{PrimaryBlue}
+    \tblhdr{Component} & \tblhdr{Technology} & \tblhdr{Version / Notes} \\
+    \midrule
+    Runtime            & PHP          & 8.4+ required \\
+    \rowalt
+    Framework          & Laravel      & 12.x \\
+    Database           & MySQL        & 8.0+ (FULLTEXT, UUID, TIME) \\
+    \rowalt
+    Authentication     & Laravel Passport & OAuth2 Personal Access Tokens \\
+    Caching            & Laravel Cache & Redis recommended; file driver for dev \\
+    \rowalt
+    Queue System       & Laravel Queue & sync driver for tests; Redis for prod \\
+    Testing            & PHPUnit      & 11.x --- \testcount{} tests, 254 assertions \\
+    \rowalt
+    API Protocol       & REST over HTTP/1.1 & JSON request and response bodies \\
+    Primary Keys       & UUID v4      & \texttt{HasUuids} on every Eloquent model \\
+    \rowalt
+    Deployment Target  & Linux / Docker & PHP-FPM + Nginx recommended \\
+    \bottomrule
+  \end{tabularx}
+\end{table}
+
+%% ─────────────────────────────────────────────────────────────────────────
+\section{RESTful API Design Philosophy}
+\label{sec:rest-philosophy}
+%% ─────────────────────────────────────────────────────────────────────────
+
+The API adheres to the REST architectural style as defined by Roy
+Fielding in his 2000 doctoral dissertation. The six Fielding constraints
+--- client-server separation, statelessness, cacheability, uniform
+interface, layered system, and code-on-demand (not used) --- are
+observed throughout the design.
+
+\subsection{Statelessness}
+
+Each HTTP request contains all the information necessary for the server
+to fulfil it. The server retains no session state between requests. The
+authentication token, the user's identity, and the user's clinic
+affiliation are all derived entirely from the bearer token on each
+request. This makes the application trivially horizontally scalable:
+any application server instance can handle any request because no
+session affinity is required.
+
+\subsection{Uniform Interface and Resource Naming}
+
+Resources are named as lowercase plural nouns in the URL path. Actions
+are expressed through the HTTP method rather than through the URL. The
+base path for all API resources is \route{/api/\apiversion{}/}, where
+\texttt{\apiversion{}} is the version string that allows the API to
+evolve without breaking existing clients.
+
+\begin{table}[h!]
+  \centering
+  \caption{RESTful URL and method conventions used in this API.}
+  \label{tab:rest-conventions}
+  \renewcommand{\arraystretch}{1.5}
+  \begin{tabularx}{\linewidth}{@{}L{2cm} L{6cm} X@{}}
+    \toprule
+    \rowcolor{PrimaryBlue}
+    \tblhdr{Method} & \tblhdr{URL Pattern} & \tblhdr{Semantic} \\
+    \midrule
+    \mget    & \route{/resources}          & List a paginated collection \\
+    \rowalt
+    \mpost   & \route{/resources}          & Create a new resource \\
+    \mget    & \route{/resources/\{id\}}   & Retrieve a single resource by ID \\
+    \rowalt
+    \mput    & \route{/resources/\{id\}}   & Replace / update a resource \\
+    \mpatch  & \route{/resources/\{id\}/status} & Partial update of a sub-field \\
+    \rowalt
+    \mdelete & \route{/resources/\{id\}}   & Delete or cancel a resource \\
+    \bottomrule
+  \end{tabularx}
+\end{table}
+
+\subsection{JSON Response Envelope}
+\label{sec:response-envelope}
+
+Every response from the API --- success or failure --- is wrapped in a
+consistent JSON envelope. This envelope provides a predictable structure
+that client code can rely on regardless of the endpoint being called.
+
+\begin{lstlisting}[style=json, caption={Standard success response envelope.}]
+{
+  "success": true,
+  "message": "Human-readable description of the outcome",
+  "data": { }
+}
+\end{lstlisting}
+
+\begin{lstlisting}[style=json, caption={Standard error response envelope.}]
+{
+  "success": false,
+  "message": "Human-readable description of the error"
+}
+\end{lstlisting}
+
+\begin{lstlisting}[style=json, caption={Validation failure envelope (HTTP 422).}]
+{
+  "success": false,
+  "errors": {
+    "field_name": ["The field_name field is required."]
+  }
+}
+\end{lstlisting}
+
+The \texttt{success} boolean allows client code to branch on a single
+field check rather than inspecting the HTTP status code. The
+\texttt{message} string is always human-readable and suitable for display
+in a user interface notification. The \texttt{data} field is present
+only on successful responses and contains either a single resource
+object or a flat array of resource objects.
+
+\begin{notebox}[Pagination]
+  List endpoints return a flat array in the \texttt{data} field. The API
+  uses Laravel's \texttt{LengthAwarePaginator} internally, but the
+  \texttt{AnonymousResourceCollection::toArray()} call in the
+  \texttt{ApiResponse} trait resolves the paginated result into a flat
+  array before returning. There is no \texttt{meta} or \texttt{links}
+  key at the top level of the envelope. Pagination parameters
+  (\texttt{page}, \texttt{per\_page}) are accepted as query string
+  parameters.
+\end{notebox}
+
+\subsection{Versioning Strategy}
+
+The API is versioned at the URL path level. All routes are nested under
+the prefix \route{/api/v1/}. This prefix is registered in
+\texttt{routes/api.php} and enforced by the routing configuration in
+\texttt{bootstrap/app.php}. When breaking changes must be introduced in
+the future, a new route group under \route{/api/v2/} can be registered
+without disturbing existing \texttt{v1} clients.
+
+\subsection{HTTP Status Code Discipline}
+
+The API uses HTTP status codes as primary signalling mechanisms, not as
+secondary annotations on a separate success field. The following status
+codes are used with strict semantic meaning.
+
+\begin{table}[h!]
+  \centering
+  \caption{HTTP status codes and their semantic meaning in this API.}
+  \label{tab:status-codes}
+  \renewcommand{\arraystretch}{1.5}
+  \begin{tabularx}{\linewidth}{@{}C{2.5cm} X@{}}
+    \toprule
+    \rowcolor{PrimaryBlue}
+    \tblhdr{Status Code} & \tblhdr{Meaning and Trigger} \\
+    \midrule
+    \stok         & Request succeeded; existing resource returned in \texttt{data}. \\
+    \rowalt
+    \stcreated    & Request succeeded; new resource was created and returned in
+                    \texttt{data}. \\
+    \stunauth     & No valid bearer token was presented; the
+                    \texttt{auth:api} middleware rejected the request. \\
+    \rowalt
+    \stforbid     & The authenticated user does not have the required role
+                    (\texttt{RoleMiddleware}), or is attempting to access a
+                    resource outside their clinic's scope
+                    (\texttt{ClinicScopeViolationException}), or is triggering
+                    a self-demotion (\texttt{SelfDemotionException}), or their
+                    account is deactivated (\texttt{AccountDeactivatedException}). \\
+    \stnotfound   & Route model binding failed to resolve the UUID in the path
+                    to an existing Eloquent model instance. \\
+    \rowalt
+    \stconflict   & A booking or reschedule request targets a time slot that is
+                    already occupied (\texttt{AppointmentConflictException}). \\
+    \stunproc     & A form request validation failed, or an operation was
+                    attempted on a resource in an incompatible state
+                    (\texttt{InvalidAppointmentStateException}). \\
+    \bottomrule
+  \end{tabularx}
+\end{table}
+
+%% ─────────────────────────────────────────────────────────────────────────
+\section{Core Business Domain}
+\label{sec:business-domain}
+%% ─────────────────────────────────────────────────────────────────────────
+
+The application models a small-to-medium medical clinic chain. The
+domain entities and their relationships are described in full in this
+section. A formal entity-relationship diagram and the corresponding
+database schema are provided in Chapter~\ref{chap:database}, but the
+narrative description here is intended to give engineers an intuitive
+understanding of the system's intent before they encounter the
+technical schema.
+
+%% ── §6.1 ─────────────────────────────────────────────────────────────────
+\subsection{The Clinic Entity}
+\label{sec:domain-clinic}
+
+A \textbf{Clinic} is the fundamental organisational unit of the system.
+Every other entity --- users, patients, appointments, and prescriptions
+--- belongs to exactly one clinic. The clinic boundary is the primary
+data isolation boundary in the application: no actor operating within
+one clinic can read or write data belonging to a different clinic,
+except for the Super Administrator, who operates at the global level
+above all clinic boundaries.
+
+A clinic has the following attributes:
+
+\begin{itemize}
+  \item \textbf{Name} --- the legal or trading name of the clinic,
+    unique across the system to prevent confusion in administrative views.
+  \item \textbf{Email} --- a contact email address for the clinic,
+    unique across the system. This is used for external communications
+    such as appointment confirmation emails.
+  \item \textbf{Address} --- the physical street address of the clinic.
+  \item \textbf{Phone} --- the primary telephone number.
+  \item \textbf{Is Active} --- a boolean flag. A deactivated clinic
+    (\texttt{is\_active = false}) is retained in the database for
+    historical integrity but its users and patients cannot be accessed
+    through normal API workflows. This supports soft-discontinuation of
+    a clinic branch without destroying its historical appointment and
+    prescription records.
+\end{itemize}
+
+Clinics are managed exclusively by the Super Administrator. No Doctor or
+Assistant has any create, update, or delete capability over clinic records.
+
+%% ── §6.2 ─────────────────────────────────────────────────────────────────
+\subsection{The User and Role System}
+\label{sec:domain-users}
+
+A \textbf{User} represents a staff member of the clinic chain. The
+system does not model patients as users; patients are a separate,
+distinct entity (see Section~\ref{sec:domain-patients}). Every user has
+an assigned role, modelled as a PHP 8.1 backed enum:
+\texttt{UserRole::SUPER\_ADMIN}, \texttt{UserRole::DOCTOR}, or
+\texttt{UserRole::ASSISTANT}.
+
+Every user (except the Super Administrator) is bound to a single clinic
+via the \texttt{clinic\_id} foreign key. A user cannot be transferred
+from one clinic to another without the Super Administrator explicitly
+updating their \texttt{clinic\_id}. This single-clinic constraint is
+the foundation of the clinic-scope enforcement described in
+Section~\ref{sec:clinic-scope}.
+
+\subsubsection{Super Administrator}
+
+The Super Administrator (\texttt{UserRole::SUPER\_ADMIN}) is the global
+administrator of the entire system. There is no architectural restriction
+on the number of Super Administrator accounts, but in practice a single
+organisation typically maintains one or two.
+
+The Super Administrator's permission surface covers:
+
+\begin{itemize}
+  \item Full CRUD over all \textbf{Clinic} records.
+  \item Full CRUD over all \textbf{User} records, including the ability
+    to assign or change roles and to activate or deactivate accounts.
+  \item Read access to the \textbf{Dashboard} aggregate, which returns
+    system-wide KPIs: total clinics, total users, total patients, total
+    appointments, and a date-range-filterable appointment breakdown.
+  \item The Super Administrator is the only actor who can call the
+    \texttt{PATCH /api/\apiversion{}/admin/users/\{id\}/role} endpoint
+    to change a user's role. A hard-coded guard in the
+    \texttt{UserController} prevents a Super Administrator from
+    demoting their own account via this endpoint; the system throws a
+    \phpclass{SelfDemotionException} if this is attempted.
+\end{itemize}
+
+The Super Administrator does \emph{not} have access to the Doctor or
+Assistant route groups. The role middleware enforces strict, non-overlapping
+role surfaces. A Super Administrator who needs to view clinical data
+must be assigned a secondary Doctor or Assistant account, or a future
+scope-expansion endpoint must be explicitly added.
+
+\subsubsection{Doctor}
+
+The Doctor (\texttt{UserRole::DOCTOR}) is a licensed medical practitioner
+affiliated with exactly one clinic. The Doctor's permission surface
+covers all clinically sensitive data within their own clinic.
+
+\begin{itemize}
+  \item \textbf{Schedule Management.} A Doctor defines their own weekly
+    availability through the \texttt{DoctorSchedule} entity. A schedule
+    entry specifies a day of the week (0 = Sunday through 6 = Saturday),
+    a start time, an end time, and a slot duration in minutes. The
+    appointment slot generator uses this schedule to compute the list
+    of bookable time slots for any given date.
+  \item \textbf{Appointment Visibility.} A Doctor can list and view all
+    appointments where they are the assigned doctor. They can filter
+    by date and status. They cannot see appointments assigned to other
+    doctors, even within the same clinic.
+  \item \textbf{Appointment Status Management.} A Doctor may advance
+    the status of their own appointments from \texttt{pending} to
+    \texttt{confirmed}, from \texttt{confirmed} to \texttt{completed}.
+    Cancellation is handled by the Assistant. There is no direct
+    Doctor cancellation endpoint in the current scope.
+  \item \textbf{Prescription Authoring.} A Doctor is the only role that
+    may create a prescription. Prescriptions are always linked to a
+    specific appointment, and the system enforces that only the
+    doctor assigned to that appointment may author its prescription.
+    Prescriptions support multiple line items (medicines), each with
+    a dosage, frequency, duration, and optional notes.
+  \item \textbf{Patient Read Access.} A Doctor may list and view patients
+    within their clinic. They do not have write access to patient records
+    (patient registration is the Assistant's responsibility). Access to
+    a patient from another clinic raises a
+    \phpclass{ClinicScopeViolationException}.
+\end{itemize}
+
+\subsubsection{Assistant}
+
+The Assistant (\texttt{UserRole::ASSISTANT}) is the front-desk or
+administrative staff member. The Assistant's role is to manage patient
+intake and appointment logistics on behalf of the clinic and its doctors.
+
+\begin{itemize}
+  \item \textbf{Patient Management.} The Assistant has full create and
+    update access to patient records within their clinic. They can
+    register a new patient (providing name, email, phone, date of birth,
+    gender, and address), search the patient roster, and update patient
+    details. The clinic scope is automatically enforced: the
+    \texttt{ClinicScopeMiddleware} injects the assistant's
+    \texttt{clinic\_id} into the request, preventing cross-clinic
+    patient creation or modification.
+  \item \textbf{Appointment Booking.} The Assistant may book an
+    appointment on behalf of a patient by supplying the doctor's ID,
+    the patient's ID, a date, and a start time. The system validates
+    that the chosen slot is available (not already booked and within
+    the doctor's defined schedule for that day of the week) and
+    computes the end time automatically from the slot duration. A
+    distributed cache lock prevents two concurrent bookings from
+    claiming the same slot.
+  \item \textbf{Appointment Rescheduling.} The Assistant may reschedule
+    a pending or confirmed appointment by providing a new date and
+    start time. The same slot availability validation applies. A
+    completed appointment cannot be rescheduled; the system throws an
+    \phpclass{InvalidAppointmentStateException}.
+  \item \textbf{Appointment Cancellation.} The Assistant may cancel
+    any appointment within their clinic by calling the
+    \texttt{DELETE} endpoint. The appointment is not removed from the
+    database; its status is updated to \texttt{cancelled} and the
+    time slot is released back into the availability pool.
+  \item \textbf{Available Slot Enquiry.} The Assistant may query the
+    list of available time slots for a specific doctor on a specific
+    date, which drives the appointment booking UI without exposing raw
+    schedule data.
+\end{itemize}
+
+%% ── §6.3 ─────────────────────────────────────────────────────────────────
+\subsection{The Patient Entity}
+\label{sec:domain-patients}
+
+A \textbf{Patient} is a person who receives care at a clinic. Patients
+are not system users and do not authenticate with the API. They exist
+purely as data objects that are created and maintained by Assistant-role
+users.
+
+\begin{itemize}
+  \item \textbf{Name} --- Full legal name. Indexed with FULLTEXT for
+    search capability.
+  \item \textbf{Phone} --- Primary contact number. Indexed with FULLTEXT
+    alongside name to support search by phone number fragment. Must be
+    unique within the clinic to prevent duplicate patient registration.
+  \item \textbf{Email} --- Optional email address for communication.
+  \item \textbf{Date of Birth} --- Used in clinical contexts for age
+    verification and dosage calculation.
+  \item \textbf{Gender} --- Modelled as the PHP enum
+    \texttt{Gender::MALE} or \texttt{Gender::FEMALE}, cast via
+    Eloquent's enum casting. Returned in API responses as the lowercase
+    string value (\texttt{"male"} or \texttt{"female"}).
+  \item \textbf{Address} --- Optional residential address.
+  \item \textbf{Clinic ID} --- The foreign key binding the patient to
+    their clinic. Set automatically by the \texttt{ClinicScopeMiddleware}
+    and cannot be overridden by the client.
+\end{itemize}
+
+\begin{warningbox}[Cross-Clinic Patient Access]
+  It is a deliberate security constraint that a patient record belonging
+  to \emph{Clinic A} cannot be read, updated, or referenced in an
+  appointment by any user of \emph{Clinic B}. Attempting to do so will
+  result in a \stforbid{} response via the
+  \phpclass{ClinicScopeViolationException}.
+\end{warningbox}
+
+%% ── §6.4 ─────────────────────────────────────────────────────────────────
+\subsection{Doctor Schedules and Time Slot Management}
+\label{sec:domain-schedules}
+
+A \textbf{DoctorSchedule} record defines the recurring weekly
+availability of a specific doctor. Each record encodes the following
+information:
+
+\begin{itemize}
+  \item \textbf{Doctor ID} --- the UUID of the doctor this schedule
+    belongs to.
+  \item \textbf{Clinic ID} --- the clinic the schedule is associated
+    with, used for scope validation.
+  \item \textbf{Day of Week} --- an integer from 0 (Sunday) to 6
+    (Saturday) following the PHP \texttt{Carbon::dayOfWeek} convention.
+  \item \textbf{Start Time} and \textbf{End Time} --- the beginning and
+    end of the doctor's working block for the given day.
+  \item \textbf{Slot Duration} --- the length of each appointment slot,
+    in minutes. A slot duration of 60 minutes means the doctor takes
+    one patient per hour.
+\end{itemize}
+
+A doctor may have multiple schedule entries (one per working day), but
+at most one schedule per day per doctor. The unique constraint on
+\texttt{(doctor\_id, day\_of\_week)} in the database enforces this.
+
+The \textbf{slot generation algorithm} in \texttt{AppointmentService}
+operates as follows: given a doctor's ID and a target date, the service
+looks up the schedule for the corresponding day of the week. It then
+iterates from the schedule's start time to its end time in increments
+of \texttt{slot\_duration} minutes, generating a list of candidate
+start times. From this list, it subtracts any start times that already
+have a non-cancelled appointment record. The resulting array is the set
+of available slots returned to the client.
+
+\begin{tipbox}[Time Format Normalisation]
+  MySQL stores TIME columns and returns them over the wire as
+  \texttt{HH:MM:SS} (e.g.\ \texttt{08:00:00}). The slot generation
+  algorithm formats candidate slots as \texttt{H:i} (e.g.\
+  \texttt{08:00}). Without normalisation, the \texttt{in\_array}
+  check would always fail, making every slot appear available even
+  when booked. The \texttt{AppointmentRepository::getBookedTimeSlots()}
+  method normalises MySQL's output using a \texttt{substr(\$t, 0, 5)}
+  call before returning the array, ensuring format consistency.
+\end{tipbox}
+
+%% ── §6.5 ─────────────────────────────────────────────────────────────────
+\subsection{The Appointment Lifecycle}
+\label{sec:domain-appointments}
+
+An \textbf{Appointment} is the central transactional entity of the
+system. It links a patient, a doctor, and a specific time slot, and it
+is the anchor record to which prescriptions are attached. Every
+appointment passes through a defined set of lifecycle states.
+
+\begin{figure}[h!]
+  \centering
+  \begin{tcolorbox}[
+    enhanced, arc=4pt, boxrule=1pt,
+    colback=LightGray, colframe=RuleGray,
+    left=12pt, right=12pt, top=10pt, bottom=10pt,
+    width=0.92\linewidth,
+  ]
+  \centering
+  \textcolor{PrimaryBlue}{\textbf{PENDING}}
+  \quad\textcolor{AccentTeal}{$\longrightarrow$}\quad
+  \textcolor{MethodPost}{\textbf{CONFIRMED}}
+  \quad\textcolor{AccentTeal}{$\longrightarrow$}\quad
+  \textcolor{MethodGet}{\textbf{COMPLETED}}
+
+  \vspace{8pt}
+
+  \textcolor{PrimaryBlue}{\textbf{PENDING}} \;or\;
+  \textcolor{MethodPost}{\textbf{CONFIRMED}}
+  \quad\textcolor{red!70!black}{$\longrightarrow$}\quad
+  \textcolor{MethodDelete}{\textbf{CANCELLED}}
+  \end{tcolorbox}
+  \caption{Valid appointment status transitions.}
+  \label{fig:appt-lifecycle}
+\end{figure}
+
+\textbf{PENDING} is the initial state assigned at booking time. It
+indicates that the appointment has been recorded in the system but the
+doctor has not yet acknowledged it.
+
+\textbf{CONFIRMED} is set by the Doctor via the
+\texttt{PATCH /api/\apiversion{}/doctor/appointments/\{id\}/status}
+endpoint. It indicates that the doctor has reviewed the appointment and
+will attend.
+
+\textbf{COMPLETED} is set by the Doctor after the consultation has
+taken place. Once an appointment is in the COMPLETED state, it is
+immutable: it cannot be rescheduled and the system will throw an
+\phpclass{InvalidAppointmentStateException} if a reschedule is
+attempted.
+
+\textbf{CANCELLED} is set by the Assistant via the
+\texttt{DELETE /api/\apiversion{}/assistant/appointments/\{id\}}
+endpoint. Cancellation does not delete the appointment record; it
+updates the status field and releases the time slot back into the
+available pool by clearing the slot-availability cache key. A cancelled
+appointment cannot have a prescription written against it; the system
+throws an \phpclass{InvalidAppointmentStateException} if this is
+attempted.
+
+An appointment record stores the following fields:
+
+\begin{itemize}
+  \item \textbf{Doctor ID} --- the UUID of the assigned doctor.
+  \item \textbf{Patient ID} --- the UUID of the patient.
+  \item \textbf{Clinic ID} --- the UUID of the clinic.
+  \item \textbf{Booked By} --- the UUID of the User (Assistant) who
+    created the appointment record.
+  \item \textbf{Appointment Date} --- the calendar date of the
+    appointment in \texttt{YYYY-MM-DD} format.
+  \item \textbf{Start Time} and \textbf{End Time} --- the slot's
+    boundaries. The end time is always computed by the service layer
+    (\texttt{start\_time + slot\_duration}); it is never accepted from
+    the client.
+  \item \textbf{Status} --- one of the four states above, stored as
+    the enum's string value.
+  \item \textbf{Notes} --- optional free-text notes provided at booking
+    time.
+\end{itemize}
+
+%% ── §6.6 ─────────────────────────────────────────────────────────────────
+\subsection{Prescription Management}
+\label{sec:domain-prescriptions}
+
+A \textbf{Prescription} is authored by a Doctor after a consultation
+and is permanently linked to the appointment from which it originated.
+The data model separates the prescription header (diagnosis, overall
+notes) from the prescription line items (individual medicines).
+
+A \textbf{PrescriptionItem} represents a single medicine entry within a
+prescription. Each item records:
+
+\begin{itemize}
+  \item \textbf{Medicine Name} --- the name of the drug or compound.
+  \item \textbf{Dosage} --- the amount per administration (e.g.\
+    \texttt{"1 tablet"}, \texttt{"5ml"}).
+  \item \textbf{Frequency} --- how often the medicine is taken (e.g.\
+    \texttt{"Three times daily"}).
+  \item \textbf{Duration} --- how long the course lasts (e.g.\
+    \texttt{"7 days"}).
+  \item \textbf{Notes} --- optional additional instructions (e.g.\
+    \texttt{"Take after meals"}).
+\end{itemize}
+
+A prescription and all of its items are created in a single API call.
+The \texttt{PrescriptionService::create()} method validates that the
+authenticated doctor is the same doctor recorded on the appointment,
+then persists the prescription header and iterates over the items array
+to persist each \texttt{PrescriptionItem} record in a database
+transaction to ensure atomicity.
+
+The following constraints are enforced at the service layer:
+
+\begin{enumerate}
+  \item Only the doctor assigned to the appointment may author its
+    prescription. Any other doctor attempting to do so will receive a
+    \stforbid{} via \phpclass{ClinicScopeViolationException}.
+  \item A prescription cannot be written for a
+    \texttt{CANCELLED} appointment. Attempting to do so raises an
+    \phpclass{InvalidAppointmentStateException}.
+  \item A prescription cannot be viewed or updated by any doctor other
+    than its author. The \texttt{PrescriptionController} guards both
+    the \texttt{show} and \texttt{update} actions with an explicit
+    ownership check.
+\end{enumerate}
+
+%% ─────────────────────────────────────────────────────────────────────────
+\section{Clinic Scope Enforcement}
+\label{sec:clinic-scope}
+%% ─────────────────────────────────────────────────────────────────────────
+
+Clinic scope enforcement is the mechanism by which the system guarantees
+that a user operating within Clinic~A can never read or modify data
+belonging to Clinic~B. This is implemented in two complementary layers.
+
+\textbf{Layer 1: Middleware Injection.}
+The \phpclass{ClinicScopeMiddleware} runs on every Doctor and Assistant
+route. It reads the authenticated user's \texttt{clinic\_id} attribute
+and calls \texttt{\$request->merge(['clinic\_id' => \$user->clinic\_id])}
+to inject this value into the request's data bag. This overwrites any
+\texttt{clinic\_id} value that the client may have included in the JSON
+request body. The net effect is that a malicious client cannot forge a
+different clinic's ID in a POST or PUT body to create or update records
+outside their own clinic.
+
+\textbf{Layer 2: Explicit Ownership Checks.}
+For read operations where the resource is fetched by UUID (e.g.\
+\texttt{GET /api/\apiversion{}/doctor/patients/\{id\}}), the controller
+compares the fetched model's \texttt{clinic\_id} against the
+\texttt{clinic\_id} injected by the middleware. If they do not match,
+the controller throws a \phpclass{ClinicScopeViolationException}, which
+renders as a \stforbid{} response. This ensures that even if a user
+correctly guesses a resource's UUID, they cannot access it if it
+belongs to a different clinic.
+
+\begin{importantbox}[Why Two Layers?]
+  The middleware alone is insufficient for read operations because the
+  UUID of a resource from another clinic might be known to an attacker
+  (e.g.\ obtained from a data breach, a log file, or enumeration).
+  The explicit ownership check at the controller layer ensures that
+  knowledge of a UUID does not grant access to it.
+\end{importantbox}
+
+%% ─────────────────────────────────────────────────────────────────────────
+\section{System Boundaries and Out-of-Scope Concerns}
+%% ─────────────────────────────────────────────────────────────────────────
+
+To prevent scope creep in future development, the following capabilities
+are explicitly \textbf{out of scope} for the current API version.
+
+\begin{itemize}
+  \item \textbf{Patient Portal.} Patients do not have accounts and cannot
+    authenticate with the API. There is no patient-facing endpoint for
+    self-registration, appointment booking, or prescription retrieval.
+    These capabilities would require a separate authentication grant
+    type and a new role definition.
+  \item \textbf{Payment Processing.} The API contains no billing,
+    invoicing, or payment integration. Financial workflows are treated
+    as an external concern.
+  \item \textbf{Real-time Notifications.} While the
+    \texttt{SendAppointmentConfirmation} job is designed to send
+    notifications, the specific notification channel (SMS, push, email)
+    and the notification service provider are deployment-time
+    configuration concerns external to the API's business logic.
+  \item \textbf{File Attachments.} No endpoint currently accepts or
+    returns binary file uploads (e.g.\ medical images, scanned
+    documents). The prescription model stores text-based clinical notes
+    only.
+  \item \textbf{Multi-Doctor Appointments.} Each appointment is assigned
+    to exactly one doctor. Scenarios involving multiple attending
+    physicians per appointment are not modelled in the current schema.
+  \item \textbf{Insurance and Referrals.} Third-party payer integration
+    and referral tracking are external to the current domain model.
+\end{itemize}
+
+%% ─────────────────────────────────────────────────────────────────────────
+\section{Key Terminology and Glossary}
+\label{sec:glossary}
+%% ─────────────────────────────────────────────────────────────────────────
+
+The following terms are used with precise and consistent meaning
+throughout this document.
+
+\begin{longtable}{@{}L{3.8cm} X@{}}
+  \toprule
+  \rowcolor{PrimaryBlue}
+  \tblhdr{Term} & \tblhdr{Definition} \\
+  \midrule
+  \endfirsthead
+
+  \toprule
+  \rowcolor{PrimaryBlue}
+  \tblhdr{Term (cont.)} & \tblhdr{Definition} \\
+  \midrule
+  \endhead
+
+  \bottomrule
+  \endfoot
+
+  API
+    & Application Programming Interface. In this context, the RESTful
+      HTTP interface exposed by the Laravel application. \\
+  \rowalt
+  Bearer Token
+    & The OAuth2 Personal Access Token issued by Laravel Passport.
+      Presented in the \texttt{Authorization: Bearer <token>}
+      HTTP request header. \\
+  Clinic Scope
+    & The data isolation boundary that restricts each Doctor and
+      Assistant to accessing only the records that belong to their
+      assigned clinic. \\
+  \rowalt
+  Controller
+    & A PHP class that receives an HTTP request, delegates to a
+      service or repository, and returns an HTTP response. Controllers
+      in this application contain no business logic. \\
+  DTO
+    & Data Transfer Object. A simple PHP object (or array) used to
+      carry structured data between layers without Eloquent model
+      coupling. \\
+  \rowalt
+  Eloquent
+    & Laravel's ORM (Object-Relational Mapper). Each database table
+      has a corresponding PHP class (a \emph{model}) that extends
+      \texttt{Illuminate\textbackslash{}Database\textbackslash{}Eloquent\textbackslash{}Model}. \\
+  Factory
+    & A PHP class extending \texttt{Illuminate\textbackslash{}Database\textbackslash{}Eloquent\textbackslash{}Factories\textbackslash{}Factory}
+      that generates realistic model instances for use in database
+      seeding and PHPUnit tests. \\
+  \rowalt
+  Form Request
+    & A dedicated Laravel class (\texttt{Illuminate\textbackslash{}Foundation\textbackslash{}Http\textbackslash{}FormRequest})
+      that encapsulates validation rules and authorisation logic for
+      a specific API endpoint. \\
+  Guard
+    & A Laravel authentication driver. The \texttt{api} guard is used
+      throughout this application and is backed by Laravel Passport. \\
+  \rowalt
+  Happy Path
+    & The test scenario in which all inputs are valid, all resources
+      exist, and the response is a \stok{} or \stcreated{}. \\
+  Middleware
+    & A PHP class that intercepts an HTTP request before it reaches
+      the controller (or an HTTP response before it leaves the
+      application) to perform cross-cutting concerns such as
+      authentication and scope enforcement. \\
+  \rowalt
+  N+1 Problem
+    & A database performance anti-pattern in which loading a
+      collection of~$N$ records triggers $N$~additional queries to
+      load each record's relationships individually, instead of a
+      single JOIN or eager-load query. \\
+  Passport
+    & Laravel's official OAuth2 server implementation. Provides the
+      \texttt{auth:api} guard and the \texttt{createToken()} method
+      on the user model. \\
+  \rowalt
+  Personal Access Token
+    & An OAuth2 access token issued without an intermediate
+      authorisation code step. Appropriate for first-party clients
+      such as the clinic management dashboard. \\
+  RefreshDatabase
+    & A PHPUnit trait provided by Laravel that wraps each test in a
+      database transaction, rolling it back after the test completes
+      to ensure test isolation. \\
+  \rowalt
+  Repository
+    & A PHP class that encapsulates all database query logic for a
+      specific Eloquent model. Controllers and services depend on
+      repositories, not directly on Eloquent models. \\
+  Resource
+    & A Laravel API resource class
+      (\texttt{Illuminate\textbackslash{}Http\textbackslash{}Resources\textbackslash{}Json\textbackslash{}JsonResource})
+      that transforms an Eloquent model into a JSON-serialisable
+      array with explicit field control. \\
+  \rowalt
+  Route Model Binding
+    & A Laravel feature that automatically resolves a UUID path
+      segment (e.g.\ \texttt{\{id\}}) into an Eloquent model instance
+      by calling \texttt{findOrFail()}, throwing a 404 if not found. \\
+  Service
+    & A PHP class that encapsulates business logic for a specific
+      domain concept. Services are called by controllers and call
+      repositories. They are the correct location for business rules
+      and domain exception throwing. \\
+  \rowalt
+  Slot
+    & A specific start-time string (format \texttt{HH:MM}) that
+      represents a bookable appointment window within a doctor's
+      schedule for a given day. \\
+  UUID
+    & Universally Unique Identifier (RFC 4122). A 128-bit value
+      formatted as 32 hexadecimal digits separated by hyphens
+      (\texttt{xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx}). Used as the
+      primary key for all entities in this system. \\
+\end{longtable}
+
+%% ─────────────────────────────────────────────────────────────────────────
+\section{How to Use the API: A Narrative Walkthrough}
+\label{sec:walkthrough}
+%% ─────────────────────────────────────────────────────────────────────────
+
+The following narrative describes the complete, end-to-end lifecycle of
+a patient's clinic interaction as mediated by the API. This walkthrough
+is intended to provide integrators with a concrete mental model of the
+system before they consult the detailed endpoint catalogue in
+Chapter~\ref{chap:endpoints}.
+
+\textbf{Step 1 --- Clinic Setup (Super Administrator).}
+A Super Administrator authenticates via
+\texttt{POST /api/\apiversion{}/auth/login} and receives a bearer token.
+They create a new clinic record via
+\texttt{POST /api/\apiversion{}/admin/clinics}, specifying the name,
+email, address, and phone number. They then create user accounts for the
+clinic's medical staff via \texttt{POST /api/\apiversion{}/admin/users},
+assigning each user a role (\texttt{doctor} or \texttt{assistant}) and
+binding them to the clinic with the \texttt{clinic\_id} field.
+
+\textbf{Step 2 --- Schedule Configuration (Doctor).}
+The newly created Doctor authenticates and calls
+\texttt{POST /api/\apiversion{}/doctor/schedules} once for each working
+day, specifying the day of the week, their start time, end time, and
+preferred slot duration.
+
+\textbf{Step 3 --- Patient Registration (Assistant).}
+The Assistant authenticates and registers a new patient via
+\texttt{POST /api/\apiversion{}/assistant/patients}. The
+\texttt{clinic\_id} is injected automatically by the middleware; the
+Assistant does not need to supply it.
+
+\textbf{Step 4 --- Slot Enquiry (Assistant).}
+Before booking, the Assistant queries available slots via
+\texttt{GET /api/\apiversion{}/assistant/available-slots?doctor\_id=\{id\}\&date=\{YYYY-MM-DD\}}.
+The API returns the list of available start times based on the doctor's
+schedule for that day, minus any already-booked slots.
+
+\textbf{Step 5 --- Appointment Booking (Assistant).}
+The Assistant books an appointment via
+\texttt{POST /api/\apiversion{}/assistant/appointments}, providing the
+doctor's ID, the patient's ID, the desired date, and the chosen start
+time. The end time is computed automatically. A \stcreated{} response
+confirms the booking. The system dispatches an asynchronous job to send
+a confirmation notification.
+
+\textbf{Step 6 --- Appointment Confirmation (Doctor).}
+The Doctor sees the pending appointment in their appointment list and
+calls
+\texttt{PATCH /api/\apiversion{}/doctor/appointments/\{id\}/status}
+with \texttt{\{"status": "confirmed"\}} to confirm their attendance.
+
+\textbf{Step 7 --- Consultation and Prescription (Doctor).}
+After the consultation, the Doctor marks the appointment as completed
+via the same status endpoint with \texttt{\{"status": "completed"\}}.
+They then author a prescription via
+\texttt{POST /api/\apiversion{}/doctor/prescriptions}, listing the
+diagnosis, any overall notes, and one or more medication items.
+
+\textbf{Step 8 --- Prescription Retrieval.}
+The prescription is permanently linked to the appointment and retrievable
+at any time by the Doctor via
+\texttt{GET /api/\apiversion{}/doctor/prescriptions/\{id\}}.
+
+This eight-step workflow covers the primary use case of the system. Edge
+cases, error scenarios, and the precise request/response payloads for
+each step are detailed in the chapters that follow.

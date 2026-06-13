@@ -1,0 +1,1889 @@
+%% ============================================================
+%%  Chapter 3 — Database Design and Eloquent Models
+%%  03_database_and_models.tex
+%% ============================================================
+\chapter{Database Design and Eloquent Models}
+\label{chap:database}
+
+\chapterintro{%
+  This chapter documents the complete relational schema of the Clinic
+  Management API. Every table is covered: its migration source code,
+  column definitions, index strategy, and foreign key constraints are
+  explained in full. Following the schema, every Eloquent model is
+  presented with its relationship declarations. The chapter closes with
+  the most comprehensive section: the Model Factory library, which is the
+  foundation of the PHPUnit test suite. Special attention is given to the
+  \phpclass{UserFactory} state pattern and the \phpclass{AppointmentFactory}
+  static-counter technique for avoiding unique-key violations in batches.
+}
+
+%% ─────────────────────────────────────────────────────────────────────────
+\section{Database Overview}
+\label{sec:db-overview}
+%% ─────────────────────────────────────────────────────────────────────────
+
+The application uses a single MySQL 8.0 database with nine
+application-owned tables. Six tables model the core business domain;
+three infrastructure tables support framework concerns (OAuth tokens,
+Laravel Cache, and the job queue).
+
+\begin{table}[h!]
+  \centering
+  \caption{Complete table inventory.}
+  \label{tab:table-inventory}
+  \renewcommand{\arraystretch}{1.5}
+  \begin{tabularx}{\linewidth}{@{}L{4cm} L{2.5cm} X@{}}
+    \toprule
+    \rowcolor{PrimaryBlue}
+    \tblhdr{Table} & \tblhdr{Category} & \tblhdr{Purpose} \\
+    \midrule
+    \texttt{clinics}            & Domain   & One record per clinic branch \\
+    \rowalt
+    \texttt{users}              & Domain   & Staff accounts (Super Admin, Doctor, Assistant) \\
+    \texttt{patients}           & Domain   & Patient registry, scoped per clinic \\
+    \rowalt
+    \texttt{doctor\_schedules}  & Domain   & Weekly availability windows per doctor \\
+    \texttt{appointments}       & Domain   & Booked consultations \\
+    \rowalt
+    \texttt{prescriptions}      & Domain   & Consultation outcome records \\
+    \texttt{prescription\_items}& Domain   & Individual medicine lines per prescription \\
+    \rowalt
+    \texttt{oauth\_access\_tokens} & Infrastructure & Laravel Passport token storage \\
+    \texttt{cache}              & Infrastructure & Laravel Cache table driver \\
+    \rowalt
+    \texttt{jobs}               & Infrastructure & Laravel Queue table driver \\
+    \bottomrule
+  \end{tabularx}
+\end{table}
+
+%% ─────────────────────────────────────────────────────────────────────────
+\section{The UUID Primary Key Strategy}
+\label{sec:uuid-strategy}
+%% ─────────────────────────────────────────────────────────────────────────
+
+Every domain table uses a \texttt{CHAR(36)} UUID column as its primary
+key rather than an auto-incrementing integer. This is enforced at the
+Eloquent layer via the \texttt{HasUuids} trait applied to every model.
+
+\subsection{How HasUuids Works}
+
+When \texttt{HasUuids} is present on a model, Eloquent overrides the
+key-generation strategy so that:
+
+\begin{enumerate}
+  \item The \texttt{incrementing} property is set to \texttt{false},
+    preventing Eloquent from treating the primary key as a
+    self-incrementing integer.
+  \item The \texttt{keyType} property is set to \texttt{'string'} so
+    that Eloquent performs string comparisons on the primary key rather
+    than integer comparisons.
+  \item Before any \texttt{INSERT}, the trait generates a new
+    \texttt{Str::uuid()} value (RFC~4122 UUID v4) and assigns it to the
+    primary key if one has not already been set.
+\end{enumerate}
+
+The migration column definition is simply:
+
+\begin{lstlisting}[style=php, caption={UUID primary key column definition.}, label={lst:uuid-col}]
+$table->uuid('id')->primary();
+\end{lstlisting}
+
+This expands to a \texttt{CHAR(36) NOT NULL PRIMARY KEY} column in MySQL.
+
+\subsection{Why UUID Over Auto-Increment?}
+
+\begin{table}[h!]
+  \centering
+  \caption{UUID vs.\ auto-increment integer trade-offs.}
+  \label{tab:uuid-vs-int}
+  \renewcommand{\arraystretch}{1.5}
+  \begin{tabularx}{\linewidth}{@{}L{4cm} X X@{}}
+    \toprule
+    \rowcolor{PrimaryBlue}
+    \tblhdr{Property} & \tblhdr{UUID} & \tblhdr{Auto-Increment} \\
+    \midrule
+    Exposable in API   & Safe --- reveals no row count or
+                          insertion order
+                       & Risky --- exposes row count and
+                         sequential order \\
+    \rowalt
+    Distributed creation & Records can be created without a
+                           central counter authority
+                         & Requires a single write-authoritative
+                           server \\
+    Index performance  & Slightly slower B-tree insertions
+                         due to random ordering
+                       & Sequential insertions; optimal
+                         B-tree performance \\
+    \rowalt
+    Join efficiency    & String comparison; slightly larger
+                         than 4-byte integer
+                       & Integer comparison; minimal storage \\
+    Enumeration safety & Guessing valid IDs is computationally
+                         infeasible ($2^{122}$ values)
+                       & Sequential IDs are trivially enumerable \\
+    \bottomrule
+  \end{tabularx}
+\end{table}
+
+For a clinical API where resource IDs appear in URLs and API responses,
+the security and distribution properties of UUID outweigh the minor
+index-insertion performance cost.
+
+%% ─────────────────────────────────────────────────────────────────────────
+\section{PHP 8.1 Backed Enums}
+\label{sec:enums}
+%% ─────────────────────────────────────────────────────────────────────────
+
+Three backed enums replace the magic strings that would otherwise be
+scattered across the codebase. All three are used as Eloquent column
+casts, meaning Eloquent automatically converts the raw database string
+into the enum instance when a model is hydrated from a query result,
+and converts the enum back to its string value on save.
+
+\begin{lstlisting}[style=php, caption={app/Enums/UserRole.php.}, label={lst:enum-role}]
+<?php
+
+namespace App\Enums;
+
+enum UserRole: string
+{
+    case SUPER_ADMIN = 'super_admin';
+    case DOCTOR      = 'doctor';
+    case ASSISTANT   = 'assistant';
+}
+\end{lstlisting}
+
+\begin{lstlisting}[style=php, caption={app/Enums/AppointmentStatus.php.}, label={lst:enum-status}]
+<?php
+
+namespace App\Enums;
+
+enum AppointmentStatus: string
+{
+    case PENDING   = 'pending';
+    case CONFIRMED = 'confirmed';
+    case COMPLETED = 'completed';
+    case CANCELLED = 'cancelled';
+}
+\end{lstlisting}
+
+\begin{lstlisting}[style=php, caption={app/Enums/Gender.php.}, label={lst:enum-gender}]
+<?php
+
+namespace App\Enums;
+
+enum Gender: string
+{
+    case MALE   = 'male';
+    case FEMALE = 'female';
+}
+\end{lstlisting}
+
+\textbf{Why backed enums?} A plain (non-backed) PHP enum has no string
+representation. A backed enum with \texttt{: string} associates each
+case with an explicit string literal that is persisted to the database
+and returned in API responses. This means that the migration column
+definition (\texttt{\$table->enum(...)}) and the JSON API output can
+both use human-readable lowercase strings (\texttt{"doctor"},
+\texttt{"pending"}) without any manual serialisation code in the
+controller or resource layers. Eloquent's enum casting handles the
+round-trip conversion automatically.
+
+\textbf{Type-safe comparisons.} Because the Eloquent attribute is
+returned as a \phpclass{UserRole} instance rather than a bare string,
+comparisons use enum case syntax:
+\texttt{\$user->role === UserRole::DOCTOR} rather than
+\texttt{\$user->role === 'doctor'}. This makes typos into compile-time
+errors instead of silent logic bugs.
+
+%% ─────────────────────────────────────────────────────────────────────────
+\section{Entity Relationship Map}
+\label{sec:erd}
+%% ─────────────────────────────────────────────────────────────────────────
+
+The following table describes every foreign key relationship in the
+schema, its cardinality, and the \texttt{ON DELETE} behaviour enforced
+at the database level.
+
+\begin{longtable}{@{}L{3cm} L{3cm} C{1.5cm} L{3.5cm} X@{}}
+  \toprule
+  \rowcolor{PrimaryBlue}
+  \tblhdr{From Table} & \tblhdr{Column} & \tblhdr{Card.}
+    & \tblhdr{To Table} & \tblhdr{ON DELETE} \\
+  \midrule
+  \endfirsthead
+  \toprule
+  \rowcolor{PrimaryBlue}
+  \tblhdr{From Table} & \tblhdr{Column} & \tblhdr{Card.}
+    & \tblhdr{To Table} & \tblhdr{ON DELETE} \\
+  \midrule
+  \endhead
+  \bottomrule
+  \endfoot
+
+  \texttt{users}
+    & \texttt{clinic\_id}
+    & $N$:1
+    & \texttt{clinics}
+    & SET NULL --- user record is preserved, clinic reference nulled \\
+  \rowalt
+  \texttt{patients}
+    & \texttt{clinic\_id}
+    & $N$:1
+    & \texttt{clinics}
+    & CASCADE --- deleting a clinic removes its patients \\
+  \texttt{doctor\_schedules}
+    & \texttt{doctor\_id}
+    & $N$:1
+    & \texttt{users}
+    & CASCADE --- deleting a user removes their schedules \\
+  \rowalt
+  \texttt{doctor\_schedules}
+    & \texttt{clinic\_id}
+    & $N$:1
+    & \texttt{clinics}
+    & CASCADE \\
+  \texttt{appointments}
+    & \texttt{clinic\_id}
+    & $N$:1
+    & \texttt{clinics}
+    & CASCADE \\
+  \rowalt
+  \texttt{appointments}
+    & \texttt{doctor\_id}
+    & $N$:1
+    & \texttt{users}
+    & CASCADE \\
+  \texttt{appointments}
+    & \texttt{patient\_id}
+    & $N$:1
+    & \texttt{patients}
+    & CASCADE \\
+  \rowalt
+  \texttt{appointments}
+    & \texttt{booked\_by}
+    & $N$:1
+    & \texttt{users}
+    & CASCADE \\
+  \texttt{prescriptions}
+    & \texttt{appointment\_id}
+    & 1:1
+    & \texttt{appointments}
+    & CASCADE \\
+  \rowalt
+  \texttt{prescriptions}
+    & \texttt{doctor\_id}
+    & $N$:1
+    & \texttt{users}
+    & CASCADE \\
+  \texttt{prescriptions}
+    & \texttt{patient\_id}
+    & $N$:1
+    & \texttt{patients}
+    & CASCADE \\
+  \rowalt
+  \texttt{prescriptions}
+    & \texttt{clinic\_id}
+    & $N$:1
+    & \texttt{clinics}
+    & CASCADE \\
+  \texttt{prescription\_items}
+    & \texttt{prescription\_id}
+    & $N$:1
+    & \texttt{prescriptions}
+    & CASCADE \\
+\end{longtable}
+
+\begin{notebox}[Cascade Semantics]
+  The \texttt{CASCADE} strategy on appointment and prescription foreign
+  keys means that deleting a \texttt{Clinic} record will recursively
+  remove all its patients, appointments, prescriptions, and prescription
+  items. This is appropriate for the clinic discontinuation use case
+  (a clinic that closes has no need for its historical records to persist
+  in isolation). However, the \texttt{SET NULL} strategy on
+  \texttt{users.clinic\_id} deliberately preserves the user account,
+  since a Super Administrator account has no clinic affiliation and
+  doctor/assistant accounts may need to be reassigned to a replacement
+  clinic.
+\end{notebox}
+
+%% ─────────────────────────────────────────────────────────────────────────
+\section{Migrations: Core Domain Tables}
+\label{sec:migrations}
+%% ─────────────────────────────────────────────────────────────────────────
+
+Laravel migrations are ordered by filename timestamp. The application
+executes them in the following sequence: \texttt{clinics} first (because
+\texttt{users} has a foreign key referencing it), then \texttt{users},
+then all dependent tables. The \texttt{users} migration is split across
+two files to resolve a chicken-and-egg dependency: the initial
+\texttt{users} table is created without the foreign key constraint so
+that the \texttt{clinics} table can be created first; a later migration
+adds the constraint.
+
+\subsection{clinics Table}
+
+\begin{lstlisting}[
+  style   = php,
+  caption = {Migration: create\_clinics\_table (2026\_06\_05\_202852).},
+  label   = {lst:mig-clinics},
+]
+Schema::create('clinics', function (Blueprint $table) {
+    $table->uuid('id')->primary();
+    $table->string('name');
+    $table->string('address');
+    $table->string('phone');
+    $table->string('email');
+    $table->boolean('is_active')->default(true);
+    $table->timestamps();
+});
+\end{lstlisting}
+
+\begin{table}[h!]
+  \centering
+  \caption{Column specification: \texttt{clinics}.}
+  \label{tab:col-clinics}
+  \renewcommand{\arraystretch}{1.5}
+  \begin{tabularx}{\linewidth}{@{}L{3cm} L{3.2cm} L{1.8cm} X@{}}
+    \toprule
+    \rowcolor{PrimaryBlue}
+    \tblhdr{Column} & \tblhdr{MySQL Type} & \tblhdr{Nullable} & \tblhdr{Notes} \\
+    \midrule
+    \texttt{id}        & \texttt{CHAR(36)} & No  & UUID PK, generated by \texttt{HasUuids} \\
+    \rowalt
+    \texttt{name}      & \texttt{VARCHAR(255)} & No  & Clinic trading name \\
+    \texttt{address}   & \texttt{VARCHAR(255)} & No  & Physical street address \\
+    \rowalt
+    \texttt{phone}     & \texttt{VARCHAR(255)} & No  & Primary contact number \\
+    \texttt{email}     & \texttt{VARCHAR(255)} & No  & Unique contact email \\
+    \rowalt
+    \texttt{is\_active}& \texttt{TINYINT(1)}   & No  & Default 1; soft-deactivation flag \\
+    \texttt{created\_at} & \texttt{TIMESTAMP}  & Yes & Set by Eloquent on create \\
+    \rowalt
+    \texttt{updated\_at} & \texttt{TIMESTAMP}  & Yes & Set by Eloquent on update \\
+    \bottomrule
+  \end{tabularx}
+\end{table}
+
+\begin{notebox}
+  The \texttt{clinics} table has no unique constraint on \texttt{name} or
+  \texttt{email} at the migration level. Uniqueness for \texttt{email} is
+  enforced in the \phpclass{StoreClinicRequest} and
+  \phpclass{UpdateClinicRequest} Form Request validation rules.
+  Adding a database-level unique index in a future migration is
+  recommended for production deployments.
+\end{notebox}
+
+\subsection{users Table}
+
+The \texttt{users} table is created in two stages. The initial migration
+creates the table with \texttt{clinic\_id} as an \texttt{UNSIGNED BIGINT}
+(the Laravel framework default) to avoid a forward-reference dependency.
+A deferred migration later changes the column type to \texttt{CHAR(36)}
+and adds the foreign key constraint.
+
+\begin{lstlisting}[
+  style   = php,
+  caption = {Migration: create\_users\_table (0001\_01\_01\_000000) --- initial schema.},
+  label   = {lst:mig-users-init},
+]
+Schema::create('users', function (Blueprint $table) {
+    $table->uuid('id')->primary();
+    $table->unsignedBigInteger('clinic_id')->nullable(); // FK added later
+    $table->string('name');
+    $table->string('email')->unique();
+    $table->string('password');
+    $table->string('phone')->nullable();
+    $table->enum('role', ['super_admin', 'doctor', 'assistant']);
+    $table->boolean('is_active')->default(true);
+    $table->timestamps();
+});
+\end{lstlisting}
+
+\begin{lstlisting}[
+  style   = php,
+  caption = {Migration: add\_foreign\_key\_to\_users\_clinic\_id (2026\_06\_11).},
+  label   = {lst:mig-users-fk},
+]
+Schema::table('users', function (Blueprint $table) {
+    // clinic_id was originally an unsignedBigInteger with no FK constraint.
+    // Clinics use UUIDs (CHAR 36), so the column type must be changed
+    // before the foreign key constraint can be added.
+    $table->foreignUuid('clinic_id')->nullable()->change();
+    $table->foreign('clinic_id')
+          ->references('id')
+          ->on('clinics')
+          ->nullOnDelete();
+});
+\end{lstlisting}
+
+\begin{warningbox}[Migration Ordering Dependency]
+  The deferred FK migration \emph{must} run after both the
+  \texttt{create\_clinics\_table} and the \texttt{create\_users\_table}
+  migrations. The timestamp prefix \texttt{2026\_06\_11} ensures this
+  ordering is respected. If the clinics table does not exist when this
+  migration runs, MySQL will raise an error and the migration will fail.
+  Always run \texttt{php artisan migrate} rather than executing
+  individual migration files directly.
+\end{warningbox}
+
+\begin{table}[h!]
+  \centering
+  \caption{Column specification: \texttt{users}.}
+  \label{tab:col-users}
+  \renewcommand{\arraystretch}{1.5}
+  \begin{tabularx}{\linewidth}{@{}L{3.2cm} L{3cm} L{1.8cm} X@{}}
+    \toprule
+    \rowcolor{PrimaryBlue}
+    \tblhdr{Column} & \tblhdr{MySQL Type} & \tblhdr{Nullable} & \tblhdr{Notes} \\
+    \midrule
+    \texttt{id}         & \texttt{CHAR(36)}     & No  & UUID PK \\
+    \rowalt
+    \texttt{clinic\_id} & \texttt{CHAR(36)}     & Yes & FK $\rightarrow$ \texttt{clinics.id} ON DELETE SET NULL \\
+    \texttt{name}       & \texttt{VARCHAR(255)} & No  & Full name \\
+    \rowalt
+    \texttt{email}      & \texttt{VARCHAR(255)} & No  & Unique; used as login credential \\
+    \texttt{password}   & \texttt{VARCHAR(255)} & No  & Bcrypt hash; hidden from all serialisation \\
+    \rowalt
+    \texttt{phone}      & \texttt{VARCHAR(255)} & Yes & Optional contact number \\
+    \texttt{role}       & \texttt{ENUM}         & No  & \texttt{'super\_admin'|'doctor'|'assistant'} \\
+    \rowalt
+    \texttt{is\_active} & \texttt{TINYINT(1)}   & No  & Default 1; deactivation blocks login \\
+    \texttt{created\_at}& \texttt{TIMESTAMP}    & Yes & \\
+    \rowalt
+    \texttt{updated\_at}& \texttt{TIMESTAMP}    & Yes & \\
+    \bottomrule
+  \end{tabularx}
+\end{table}
+
+\begin{notebox}[No email\_verified\_at Column]
+  The \texttt{users} table does not have the \texttt{email\_verified\_at}
+  or \texttt{remember\_token} columns that Laravel includes in its default
+  stub migration. These columns were deliberately omitted because the
+  application does not implement email verification flows or web session
+  (cookie-based) authentication. Both columns would be dead weight and
+  their absence avoids a factory pitfall: the default Laravel
+  \phpclass{UserFactory} sets \texttt{email\_verified\_at} to
+  \texttt{now()}, which would cause a fatal \texttt{unknown column} error
+  if copied without modification. The \phpclass{UserFactory} for this
+  project does not set those fields.
+\end{notebox}
+
+\subsection{patients Table}
+
+\begin{lstlisting}[
+  style   = php,
+  caption = {Migration: create\_patients\_table (2026\_06\_05\_202918).},
+  label   = {lst:mig-patients},
+]
+Schema::create('patients', function (Blueprint $table) {
+    $table->uuid('id')->primary();
+    $table->foreignUuid('clinic_id')->constrained()->cascadeOnDelete();
+    $table->string('name');
+    $table->string('email')->nullable();
+    $table->string('phone');
+    $table->date('date_of_birth')->nullable();
+    $table->enum('gender', ['male', 'female']);
+    $table->text('address')->nullable();
+    $table->timestamps();
+});
+\end{lstlisting}
+
+The \texttt{patients} table is augmented by a separate FULLTEXT migration:
+
+\begin{lstlisting}[
+  style   = php,
+  caption = {Migration: add\_fulltext\_index\_to\_patients (2026\_06\_11\_000002).},
+  label   = {lst:mig-patients-ft},
+]
+Schema::table('patients', function (Blueprint $table) {
+    $table->fullText(['name', 'phone']);
+});
+\end{lstlisting}
+
+\textbf{Why a separate migration?} The FULLTEXT index migration is kept
+separate for two reasons. First, it makes the index easy to drop and
+recreate independently of the table definition (useful when
+troubleshooting index performance). Second, it was added after the
+initial schema was established, reflecting the real-world evolution of
+the schema. A single migration can add both the table and the FULLTEXT
+index, but splitting them documents the timeline of the design decision.
+
+\textbf{FULLTEXT index on \texttt{(name, phone)}.} MySQL's FULLTEXT
+engine indexes both columns as a composite virtual document. Searching
+for a patient with
+\texttt{->whereFullText(['name', 'phone'], 'ahmed 01001')} performs a
+natural-language full-text search across both columns simultaneously.
+This is several orders of magnitude faster than a
+\texttt{LIKE '\%ahmed\%'} scan on large patient tables and requires
+no additional query planner tuning.
+
+\begin{importantbox}[MySQL Only]
+  The FULLTEXT index is a MySQL-specific feature. The test suite is
+  configured to use a real MySQL database (\texttt{DB\_CONNECTION=mysql})
+  specifically to validate this functionality. Switching to SQLite for
+  testing would silently make this index non-functional.
+\end{importantbox}
+
+\begin{table}[h!]
+  \centering
+  \caption{Column specification: \texttt{patients}.}
+  \label{tab:col-patients}
+  \renewcommand{\arraystretch}{1.5}
+  \begin{tabularx}{\linewidth}{@{}L{3.2cm} L{3cm} L{1.8cm} X@{}}
+    \toprule
+    \rowcolor{PrimaryBlue}
+    \tblhdr{Column} & \tblhdr{MySQL Type} & \tblhdr{Nullable} & \tblhdr{Notes} \\
+    \midrule
+    \texttt{id}            & \texttt{CHAR(36)}     & No  & UUID PK \\
+    \rowalt
+    \texttt{clinic\_id}    & \texttt{CHAR(36)}     & No  & FK $\rightarrow$ \texttt{clinics.id} CASCADE \\
+    \texttt{name}          & \texttt{VARCHAR(255)} & No  & Indexed by FULLTEXT \\
+    \rowalt
+    \texttt{email}         & \texttt{VARCHAR(255)} & Yes & Optional \\
+    \texttt{phone}         & \texttt{VARCHAR(255)} & No  & Indexed by FULLTEXT \\
+    \rowalt
+    \texttt{date\_of\_birth} & \texttt{DATE}       & Yes & Cast to \texttt{Carbon} by Eloquent \\
+    \texttt{gender}        & \texttt{ENUM}         & No  & \texttt{'male'|'female'} \\
+    \rowalt
+    \texttt{address}       & \texttt{TEXT}         & Yes & \\
+    \bottomrule
+  \end{tabularx}
+\end{table}
+
+\subsection{doctor\_schedules Table}
+
+\begin{lstlisting}[
+  style   = php,
+  caption = {Migration: create\_doctor\_schedules\_table (2026\_06\_05\_202954).},
+  label   = {lst:mig-schedules},
+]
+Schema::create('doctor_schedules', function (Blueprint $table) {
+    $table->uuid('id')->primary();
+    $table->foreignUuid('doctor_id')->constrained('users')->cascadeOnDelete();
+    $table->foreignUuid('clinic_id')->constrained()->cascadeOnDelete();
+    $table->tinyInteger('day_of_week');  // 0 = Sunday ... 6 = Saturday
+    $table->time('start_time');
+    $table->time('end_time');
+    $table->tinyInteger('slot_duration')->default(30); // minutes
+    $table->boolean('is_active')->default(true);
+    $table->timestamps();
+});
+\end{lstlisting}
+
+\textbf{Column notes.}
+
+\begin{itemize}
+  \item \texttt{day\_of\_week} stores an integer from 0 to 6 following
+    the \phpclass{Carbon} convention where 0 is Sunday and 6 is Saturday.
+    This aligns with \texttt{Carbon::dayOfWeek} used in the slot
+    computation algorithm in \phpclass{AppointmentService}.
+  \item \texttt{start\_time} and \texttt{end\_time} use MySQL's native
+    \texttt{TIME} type. MySQL returns these values as
+    \texttt{HH:MM:SS} strings over the wire. As documented in
+    Section~\ref{sec:time-normalisation}, the repository layer normalises
+    these to \texttt{HH:MM} before any comparison with slot times.
+  \item \texttt{slot\_duration} defaults to 30 minutes. The test suite
+    uses 60-minute slots to keep slot boundary arithmetic simple.
+  \item \texttt{is\_active} allows a schedule to be disabled temporarily
+    without deleting it, supporting vacation or leave scenarios.
+\end{itemize}
+
+\begin{table}[h!]
+  \centering
+  \caption{Column specification: \texttt{doctor\_schedules}.}
+  \label{tab:col-schedules}
+  \renewcommand{\arraystretch}{1.5}
+  \begin{tabularx}{\linewidth}{@{}L{3.2cm} L{3cm} L{1.8cm} X@{}}
+    \toprule
+    \rowcolor{PrimaryBlue}
+    \tblhdr{Column} & \tblhdr{MySQL Type} & \tblhdr{Nullable} & \tblhdr{Notes} \\
+    \midrule
+    \texttt{id}             & \texttt{CHAR(36)}   & No & UUID PK \\
+    \rowalt
+    \texttt{doctor\_id}     & \texttt{CHAR(36)}   & No & FK $\rightarrow$ \texttt{users.id} CASCADE \\
+    \texttt{clinic\_id}     & \texttt{CHAR(36)}   & No & FK $\rightarrow$ \texttt{clinics.id} CASCADE \\
+    \rowalt
+    \texttt{day\_of\_week}  & \texttt{TINYINT}    & No & 0=Sun, 1=Mon \ldots\ 6=Sat \\
+    \texttt{start\_time}    & \texttt{TIME}       & No & Returns as \texttt{HH:MM:SS} from MySQL \\
+    \rowalt
+    \texttt{end\_time}      & \texttt{TIME}       & No & Returns as \texttt{HH:MM:SS} from MySQL \\
+    \texttt{slot\_duration} & \texttt{TINYINT}    & No & Minutes per slot; default 30 \\
+    \rowalt
+    \texttt{is\_active}     & \texttt{TINYINT(1)} & No & Default 1 \\
+    \bottomrule
+  \end{tabularx}
+\end{table}
+
+\subsection{appointments Table}
+
+The \texttt{appointments} table is the most constraint-rich table in
+the schema, with four foreign keys, an enum column, and a composite
+unique index.
+
+\begin{lstlisting}[
+  style   = php,
+  caption = {Migration: create\_appointments\_table (2026\_06\_05\_203047).},
+  label   = {lst:mig-appts},
+]
+Schema::create('appointments', function (Blueprint $table) {
+    $table->uuid('id')->primary();
+    $table->foreignUuid('clinic_id')->constrained()->cascadeOnDelete();
+    $table->foreignUuid('doctor_id')->constrained('users')->cascadeOnDelete();
+    $table->foreignUuid('patient_id')->constrained()->cascadeOnDelete();
+    $table->foreignUuid('booked_by')->constrained('users')->cascadeOnDelete();
+
+    $table->date('appointment_date');
+    $table->time('start_time');
+    $table->time('end_time');
+    $table->enum('status', ['pending', 'confirmed', 'cancelled', 'completed'])
+          ->default('pending');
+    $table->text('notes')->nullable();
+    $table->timestamps();
+
+    // Last-resort double-booking guard at the database level.
+    // The application-layer cache lock is the primary guard.
+    $table->unique(['doctor_id', 'appointment_date', 'start_time']);
+});
+\end{lstlisting}
+
+\textbf{The composite unique index} on
+\texttt{(doctor\_id, appointment\_date, start\_time)} is the database's
+final defence against double-booking. The application layer uses a
+\texttt{Cache::lock()} (see Section~\ref{sec:service-layer}) as the
+primary concurrency guard, but the database index provides a hard
+guarantee in all scenarios, including direct database access outside
+the application.
+
+This index also has a significant implication for the test factory,
+which is addressed in Section~\ref{sec:appt-factory}: creating two
+\texttt{Appointment} records in the same test with the same doctor, date,
+and start time will raise a duplicate key error unless the test provides
+distinct start times.
+
+\textbf{The \texttt{booked\_by} column} records the \texttt{users.id}
+of the Assistant who created the appointment record. It is a foreign key
+to \texttt{users} with a non-standard local column name, requiring the
+explicit \texttt{constrained('users')} call to tell Laravel which table
+to reference.
+
+\begin{table}[h!]
+  \centering
+  \caption{Column specification: \texttt{appointments}.}
+  \label{tab:col-appointments}
+  \renewcommand{\arraystretch}{1.5}
+  \begin{tabularx}{\linewidth}{@{}L{3.5cm} L{3cm} L{1.8cm} X@{}}
+    \toprule
+    \rowcolor{PrimaryBlue}
+    \tblhdr{Column} & \tblhdr{MySQL Type} & \tblhdr{Nullable} & \tblhdr{Notes} \\
+    \midrule
+    \texttt{id}               & \texttt{CHAR(36)} & No  & UUID PK \\
+    \rowalt
+    \texttt{clinic\_id}       & \texttt{CHAR(36)} & No  & FK $\rightarrow$ \texttt{clinics.id} CASCADE \\
+    \texttt{doctor\_id}       & \texttt{CHAR(36)} & No  & FK $\rightarrow$ \texttt{users.id} CASCADE \\
+    \rowalt
+    \texttt{patient\_id}      & \texttt{CHAR(36)} & No  & FK $\rightarrow$ \texttt{patients.id} CASCADE \\
+    \texttt{booked\_by}       & \texttt{CHAR(36)} & No  & FK $\rightarrow$ \texttt{users.id} CASCADE \\
+    \rowalt
+    \texttt{appointment\_date}& \texttt{DATE}     & No  & Cast to \texttt{Carbon} by Eloquent \\
+    \texttt{start\_time}      & \texttt{TIME}     & No  & Part of composite unique index \\
+    \rowalt
+    \texttt{end\_time}        & \texttt{TIME}     & No  & Computed by service; never from client \\
+    \texttt{status}           & \texttt{ENUM}     & No  & Default \texttt{'pending'} \\
+    \rowalt
+    \texttt{notes}            & \texttt{TEXT}     & Yes & Optional booking notes \\
+    \bottomrule
+  \end{tabularx}
+\end{table}
+
+\subsection{prescriptions Table}
+
+\begin{lstlisting}[
+  style   = php,
+  caption = {Migration: create\_prescriptions\_table (2026\_06\_05\_203107).},
+  label   = {lst:mig-rx},
+]
+Schema::create('prescriptions', function (Blueprint $table) {
+    $table->uuid('id')->primary();
+    $table->foreignUuid('appointment_id')->constrained()->cascadeOnDelete();
+    $table->foreignUuid('doctor_id')->constrained('users')->cascadeOnDelete();
+    $table->foreignUuid('patient_id')->constrained()->cascadeOnDelete();
+    $table->foreignUuid('clinic_id')->constrained()->cascadeOnDelete();
+    $table->text('diagnosis');
+    $table->text('notes')->nullable();
+    $table->timestamps();
+});
+\end{lstlisting}
+
+The prescription table denormalises \texttt{doctor\_id},
+\texttt{patient\_id}, and \texttt{clinic\_id} even though all three
+could be derived from the linked \texttt{appointment}. This is a
+deliberate design choice: it allows efficient prescription queries by
+doctor (\texttt{WHERE doctor\_id = ?}) and patient without joining
+through the \texttt{appointments} table, and it provides an explicit
+audit trail of who wrote what for whom, independent of any future
+appointment archival strategy.
+
+\subsection{prescription\_items Table}
+
+\begin{lstlisting}[
+  style   = php,
+  caption = {Migration: create\_prescription\_items\_table (2026\_06\_05\_203128).},
+  label   = {lst:mig-rx-items},
+]
+Schema::create('prescription_items', function (Blueprint $table) {
+    $table->uuid('id')->primary();
+    $table->foreignUuid('prescription_id')->constrained()->cascadeOnDelete();
+    $table->string('medicine_name');
+    $table->string('dosage');
+    $table->string('frequency');
+    $table->string('duration');
+    $table->text('notes')->nullable();
+    $table->timestamps();
+});
+\end{lstlisting}
+
+All fields except \texttt{notes} are non-nullable. The
+\phpclass{StorePrescriptionRequest} enforces this at validation time:
+each item in the \texttt{items} array must provide
+\texttt{medicine\_name}, \texttt{dosage}, \texttt{frequency}, and
+\texttt{duration}. The \texttt{notes} field is optional per item,
+distinct from the top-level prescription \texttt{notes}.
+
+%% ─────────────────────────────────────────────────────────────────────────
+\section{Eloquent Models}
+\label{sec:models}
+%% ─────────────────────────────────────────────────────────────────────────
+
+\subsection{The User Model}
+
+\begin{lstlisting}[
+  style   = php,
+  caption = {app/Models/User.php.},
+  label   = {lst:model-user},
+]
+<?php
+
+namespace App\Models;
+
+use App\Enums\UserRole;
+use Database\Factories\UserFactory;
+use Illuminate\Database\Eloquent\Concerns\HasUuids;
+use Illuminate\Database\Eloquent\Factories\HasFactory;
+use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Database\Eloquent\Relations\HasMany;
+use Illuminate\Foundation\Auth\User as Authenticatable;
+use Illuminate\Notifications\Notifiable;
+use Laravel\Passport\HasApiTokens;
+
+class User extends Authenticatable
+{
+    /** @use HasFactory<UserFactory> */
+    use HasApiTokens, HasFactory, Notifiable, HasUuids;
+
+    protected $fillable = [
+        'clinic_id', 'name', 'email', 'password',
+        'phone', 'role', 'is_active',
+    ];
+
+    protected $hidden = ['password', 'remember_token'];
+
+    protected $casts = [
+        'password'  => 'hashed',
+        'is_active' => 'boolean',
+        'role'      => UserRole::class,
+    ];
+
+    public function clinic(): BelongsTo
+    {
+        return $this->belongsTo(Clinic::class);
+    }
+
+    public function schedules(): HasMany
+    {
+        return $this->hasMany(DoctorSchedule::class);
+    }
+}
+\end{lstlisting}
+
+\textbf{Key observations on the User model.}
+
+\begin{itemize}
+  \item \textbf{\texttt{HasApiTokens}} is the Passport trait. It adds the
+    \texttt{createToken()} method and the \texttt{token()} accessor used
+    by \phpclass{AuthService} to issue and revoke access tokens.
+
+  \item \textbf{\texttt{extends Authenticatable}} rather than plain
+    \texttt{Model}. This inheritance chain (\texttt{User} $\to$
+    \texttt{Authenticatable} $\to$ \texttt{Model}) satisfies Laravel's
+    authentication guard contract without requiring manual interface
+    implementation.
+
+  \item \textbf{\texttt{'password' => 'hashed'}} is a Laravel 10+
+    cast that automatically bcrypt-hashes any value assigned to the
+    \texttt{password} attribute, removing the need for explicit
+    \texttt{bcrypt()} or \texttt{Hash::make()} calls when setting a
+    password via mass assignment.
+
+  \item \textbf{\texttt{'role' => UserRole::class}} is the enum cast.
+    When Eloquent loads a user from MySQL, the raw string
+    \texttt{"doctor"} in the \texttt{role} column is automatically
+    converted to the \texttt{UserRole::DOCTOR} enum case. On save, the
+    enum case is converted back to its \texttt{->value} string.
+
+  \item \textbf{\texttt{schedules(): HasMany}} is the only
+    \texttt{HasMany} relationship on the User model. The model does not
+    declare \texttt{hasMany(Appointment::class)} because appointments
+    are always queried through the repository with explicit where clauses
+    rather than through the Eloquent relationship chain, avoiding N+1
+    query exposure.
+\end{itemize}
+
+\subsection{The Clinic Model}
+
+\begin{lstlisting}[
+  style   = php,
+  caption = {app/Models/Clinic.php.},
+  label   = {lst:model-clinic},
+]
+<?php
+
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Concerns\HasUuids;
+use Illuminate\Database\Eloquent\Factories\HasFactory;
+use Illuminate\Database\Eloquent\Model;
+use Illuminate\Database\Eloquent\Relations\HasMany;
+
+class Clinic extends Model
+{
+    use HasFactory, HasUuids;
+
+    protected $fillable = [
+        'name', 'address', 'phone', 'email', 'is_active',
+    ];
+
+    protected $casts = ['is_active' => 'boolean'];
+
+    public function doctors(): HasMany
+    {
+        return $this->hasMany(User::class);
+    }
+
+    public function appointments(): HasMany
+    {
+        return $this->hasMany(Appointment::class);
+    }
+
+    public function patients(): HasMany
+    {
+        return $this->hasMany(Patient::class);
+    }
+}
+\end{lstlisting}
+
+The \texttt{Clinic} model is the aggregate root: every other domain
+entity has a foreign key pointing back to a clinic. The three
+\texttt{HasMany} relationships declared here are available for eager
+loading in dashboard aggregate queries but are not used directly in
+per-request resource retrieval, which goes through scoped repository
+queries instead.
+
+\subsection{The Patient Model}
+
+\begin{lstlisting}[
+  style   = php,
+  caption = {app/Models/Patient.php.},
+  label   = {lst:model-patient},
+]
+<?php
+
+namespace App\Models;
+
+use App\Enums\Gender;
+use Illuminate\Database\Eloquent\Concerns\HasUuids;
+use Illuminate\Database\Eloquent\Factories\HasFactory;
+use Illuminate\Database\Eloquent\Model;
+use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Database\Eloquent\Relations\HasMany;
+
+class Patient extends Model
+{
+    use HasFactory, HasUuids;
+
+    protected $fillable = [
+        'clinic_id', 'name', 'email', 'phone',
+        'date_of_birth', 'gender', 'address',
+    ];
+
+    protected $casts = [
+        'date_of_birth' => 'date',
+        'gender'        => Gender::class,
+    ];
+
+    public function clinic(): BelongsTo
+    {
+        return $this->belongsTo(Clinic::class);
+    }
+
+    public function appointments(): HasMany
+    {
+        return $this->hasMany(Appointment::class);
+    }
+}
+\end{lstlisting}
+
+The \texttt{date} cast on \texttt{date\_of\_birth} converts the MySQL
+\texttt{DATE} string into a \texttt{Carbon} instance on hydration,
+enabling age calculation via \texttt{\$patient->date\_of\_birth->age}
+and date comparison without manual string parsing.
+
+\subsection{The Appointment Model}
+
+\begin{lstlisting}[
+  style   = php,
+  caption = {app/Models/Appointment.php.},
+  label   = {lst:model-appt},
+]
+<?php
+
+namespace App\Models;
+
+use App\Enums\AppointmentStatus;
+use Illuminate\Database\Eloquent\Concerns\HasUuids;
+use Illuminate\Database\Eloquent\Factories\HasFactory;
+use Illuminate\Database\Eloquent\Model;
+use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Database\Eloquent\Relations\HasOne;
+
+class Appointment extends Model
+{
+    use HasFactory, HasUuids;
+
+    protected $fillable = [
+        'clinic_id', 'doctor_id', 'patient_id', 'booked_by',
+        'appointment_date', 'start_time', 'end_time',
+        'status', 'notes',
+    ];
+
+    protected $attributes = ['status' => 'pending'];
+
+    protected $casts = [
+        'appointment_date' => 'date',
+        'status'           => AppointmentStatus::class,
+    ];
+
+    public function clinic(): BelongsTo
+    {
+        return $this->belongsTo(Clinic::class);
+    }
+
+    public function doctor(): BelongsTo
+    {
+        return $this->belongsTo(User::class, 'doctor_id');
+    }
+
+    public function patient(): BelongsTo
+    {
+        return $this->belongsTo(Patient::class);
+    }
+
+    public function bookedBy(): BelongsTo
+    {
+        return $this->belongsTo(User::class, 'booked_by');
+    }
+
+    public function prescription(): HasOne
+    {
+        return $this->hasOne(Prescription::class);
+    }
+}
+\end{lstlisting}
+
+\textbf{Key observations.}
+
+\begin{itemize}
+  \item \textbf{\texttt{\$attributes = ['status' => 'pending']}} sets
+    the default value at the Eloquent level. Without this, a newly
+    instantiated \texttt{Appointment} model would have a null status
+    until it is saved, which could cause a null pointer dereference if
+    status is read before the first database round-trip.
+
+  \item \textbf{\texttt{doctor()} and \texttt{bookedBy()} both point to
+    \texttt{User::class}} but use different foreign keys. Eloquent
+    cannot infer the correct foreign key column from the method name
+    alone when it differs from the \texttt{user\_id} convention, so
+    the second argument (\texttt{'doctor\_id'} and
+    \texttt{'booked\_by'}) must be explicit.
+
+  \item \textbf{\texttt{prescription(): HasOne}} is a one-to-one
+    relationship. An appointment has at most one prescription. The
+    \phpclass{PrescriptionController} enforces this at the business
+    logic level; the database does not have a unique constraint on
+    \texttt{prescriptions.appointment\_id}, making this a future
+    hardening opportunity.
+\end{itemize}
+
+\subsection{The DoctorSchedule Model}
+
+\begin{lstlisting}[
+  style   = php,
+  caption = {app/Models/DoctorSchedule.php.},
+  label   = {lst:model-schedule},
+]
+<?php
+
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Concerns\HasUuids;
+use Illuminate\Database\Eloquent\Factories\HasFactory;
+use Illuminate\Database\Eloquent\Model;
+use Illuminate\Database\Eloquent\Relations\BelongsTo;
+
+class DoctorSchedule extends Model
+{
+    use HasFactory, HasUuids;
+
+    protected $fillable = [
+        'doctor_id', 'clinic_id', 'day_of_week',
+        'start_time', 'end_time', 'slot_duration', 'is_active',
+    ];
+
+    protected $casts = ['is_active' => 'boolean'];
+
+    public function doctor(): BelongsTo
+    {
+        return $this->belongsTo(User::class, 'doctor_id');
+    }
+
+    public function clinic(): BelongsTo
+    {
+        return $this->belongsTo(Clinic::class);
+    }
+}
+\end{lstlisting}
+
+\subsection{The Prescription and PrescriptionItem Models}
+
+\begin{lstlisting}[
+  style   = php,
+  caption = {app/Models/Prescription.php.},
+  label   = {lst:model-rx},
+]
+<?php
+
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Concerns\HasUuids;
+use Illuminate\Database\Eloquent\Factories\HasFactory;
+use Illuminate\Database\Eloquent\Model;
+use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Database\Eloquent\Relations\HasMany;
+
+class Prescription extends Model
+{
+    use HasFactory, HasUuids;
+
+    protected $fillable = [
+        'appointment_id', 'doctor_id', 'patient_id',
+        'clinic_id', 'diagnosis', 'notes',
+    ];
+
+    public function appointment(): BelongsTo
+    {
+        return $this->belongsTo(Appointment::class);
+    }
+
+    public function doctor(): BelongsTo
+    {
+        return $this->belongsTo(User::class, 'doctor_id');
+    }
+
+    public function patient(): BelongsTo
+    {
+        return $this->belongsTo(Patient::class);
+    }
+
+    public function clinic(): BelongsTo
+    {
+        return $this->belongsTo(Clinic::class);
+    }
+
+    public function items(): HasMany
+    {
+        return $this->hasMany(PrescriptionItem::class);
+    }
+}
+\end{lstlisting}
+
+\begin{lstlisting}[
+  style   = php,
+  caption = {app/Models/PrescriptionItem.php.},
+  label   = {lst:model-rx-item},
+]
+<?php
+
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Concerns\HasUuids;
+use Illuminate\Database\Eloquent\Factories\HasFactory;
+use Illuminate\Database\Eloquent\Model;
+use Illuminate\Database\Eloquent\Relations\BelongsTo;
+
+class PrescriptionItem extends Model
+{
+    use HasFactory, HasUuids;
+
+    protected $fillable = [
+        'prescription_id', 'medicine_name', 'dosage',
+        'frequency', 'duration', 'notes',
+    ];
+
+    public function prescription(): BelongsTo
+    {
+        return $this->belongsTo(Prescription::class);
+    }
+}
+\end{lstlisting}
+
+%% ─────────────────────────────────────────────────────────────────────────
+\section{Model Factories}
+\label{sec:factories}
+%% ─────────────────────────────────────────────────────────────────────────
+
+Model Factories are the cornerstone of the PHPUnit test suite. They are
+PHP classes that extend
+\texttt{Illuminate\textbackslash{}Database\textbackslash{}Eloquent\textbackslash{}Factories\textbackslash{}Factory}
+and provide a \texttt{definition()} method that returns an array of
+default attribute values for one model instance. The Laravel testing
+framework provides \texttt{Factory::create()} (persists to DB) and
+\texttt{Factory::make()} (in-memory only) for instantiating models from
+these definitions.
+
+The factory system supports three essential testing capabilities:
+
+\begin{enumerate}
+  \item \textbf{Realistic random data.} The \texttt{fake()} helper
+    (backed by the Faker library) generates realistic names, emails,
+    phone numbers, and dates, avoiding hardcoded strings that accumulate
+    unique-constraint collisions across test runs.
+  \item \textbf{Automatic relationship resolution.} A factory attribute
+    can reference another factory (e.g.\ \texttt{'clinic\_id' =>
+    Clinic::factory()}), which Laravel automatically resolves to a
+    created record's UUID when the factory runs.
+  \item \textbf{State methods.} Fluent state methods allow tests to
+    express intent clearly and compose multiple states without test
+    helper duplication (e.g.\
+    \texttt{User::factory()->doctor()->forClinic(\$clinic)->inactive()->create()}).
+\end{enumerate}
+
+\subsection{UserFactory --- The State Pattern in Detail}
+\label{sec:user-factory}
+
+\phpclass{UserFactory} is the most important factory in the codebase
+because \texttt{User} records are required by almost every test. The
+factory must support all three role types, clinic affiliation, and the
+active/inactive toggle.
+
+\begin{lstlisting}[
+  style   = php,
+  caption = {database/factories/UserFactory.php --- complete source.},
+  label   = {lst:factory-user},
+]
+<?php
+
+namespace Database\Factories;
+
+use App\Enums\UserRole;
+use App\Models\Clinic;
+use App\Models\User;
+use Illuminate\Database\Eloquent\Factories\Factory;
+use Illuminate\Support\Facades\Hash;
+
+/**
+ * @extends Factory<User>
+ */
+class UserFactory extends Factory
+{
+    // Static property: the hashed password is computed once and reused
+    // across all factory calls within a single test run. This avoids
+    // bcrypt's intentional slowness (typically 100ms per hash) from
+    // multiplying across dozens of user creation calls.
+    protected static ?string $password;
+
+    public function definition(): array
+    {
+        return [
+            'clinic_id' => null,
+            'name'      => fake()->name(),
+            'email'     => fake()->unique()->safeEmail(),
+            'password'  => static::$password ??= Hash::make('password'),
+            'phone'     => fake()->phoneNumber(),
+            'role'      => UserRole::DOCTOR,       // default role
+            'is_active' => true,
+        ];
+    }
+
+    /** State: Super Administrator — global scope, no clinic binding */
+    public function superAdmin(): static
+    {
+        return $this->state([
+            'role'      => UserRole::SUPER_ADMIN,
+            'clinic_id' => null,
+        ]);
+    }
+
+    /** State: Doctor — default role, requires clinic via forClinic() */
+    public function doctor(): static
+    {
+        return $this->state(['role' => UserRole::DOCTOR]);
+    }
+
+    /** State: Assistant — front-desk staff, requires clinic via forClinic() */
+    public function assistant(): static
+    {
+        return $this->state(['role' => UserRole::ASSISTANT]);
+    }
+
+    /** State: Bind the user to a specific Clinic instance */
+    public function forClinic(Clinic $clinic): static
+    {
+        return $this->state(['clinic_id' => $clinic->id]);
+    }
+
+    /** State: Deactivated account — blocks login via AccountDeactivatedException */
+    public function inactive(): static
+    {
+        return $this->state(['is_active' => false]);
+    }
+}
+\end{lstlisting}
+
+\subsubsection{The \texttt{static::\$password} Optimisation}
+
+The single most impactful performance technique in the factory is the
+static property cache on the password hash:
+
+\begin{lstlisting}[style=php, caption={Password hash memoisation.}, label={lst:pw-cache}]
+protected static ?string $password;
+
+// Inside definition():
+'password' => static::$password ??= Hash::make('password'),
+\end{lstlisting}
+
+\textbf{Why this matters.} \texttt{Hash::make()} uses the bcrypt
+algorithm with a cost factor of 12 (the Laravel default). At this cost,
+a single bcrypt operation takes approximately 80--120 milliseconds on
+typical hardware. The test suite creates 73+ user records across all
+test cases. Without caching, bcrypt would run 73+ times, adding up to
+\emph{6--9 seconds} of pure hashing time to the test run.
+
+\textbf{How it works.} The \texttt{??=} null-coalescing assignment
+operator checks whether \texttt{static::\$password} is null. On the
+first call within a PHP process, it is null, so the right-hand side
+(\texttt{Hash::make('password')}) is evaluated and the result is stored
+in \texttt{static::\$password}. On every subsequent call, the
+stored hash is returned immediately without re-hashing.
+
+\textbf{The \texttt{static::} vs \texttt{self::} distinction.} Using
+\texttt{static::\$password} instead of \texttt{self::\$password} ensures
+that if a subclass of \texttt{UserFactory} is created in the future, it
+uses its own static property rather than sharing the parent class's cache.
+This is the Late Static Binding (LSB) semantics of PHP 5.3+.
+
+\textbf{Test isolation.} Because the cache is a \emph{static} property
+(class-level, not instance-level), it persists across factory instances
+but is reset between PHPUnit processes. Within a single test run, all
+test cases share the same hash. This is safe because the password value
+used by factories (\texttt{'password'}) is a constant known to the
+test suite and is never used in production.
+
+\subsubsection{State Method Mechanics}
+
+Each state method calls \texttt{\$this->state(array \$attributes)}. The
+\texttt{state()} method returns a new \texttt{Factory} instance (the
+factory is immutable) with the given attributes merged over the defaults
+from \texttt{definition()}. States are applied in order and later states
+override earlier ones.
+
+This means:
+
+\begin{lstlisting}[style=php, caption={State composition example.}, label={lst:state-compose}]
+// All three states are applied in sequence.
+// forClinic() overrides the clinic_id that superAdmin() set to null.
+// inactive() overrides the is_active that definition() set to true.
+$user = User::factory()
+    ->superAdmin()
+    ->forClinic($clinic) // overrides clinic_id => null from superAdmin()
+    ->inactive()         // overrides is_active => true from definition()
+    ->create();
+// Result: role=SUPER_ADMIN, clinic_id=$clinic->id, is_active=false
+\end{lstlisting}
+
+The composability of state methods is what allows tests to express
+complex fixture scenarios in a single readable line without
+intermediate variable assignments or boilerplate arrays.
+
+\subsubsection{The \texttt{forClinic()} State and Type Safety}
+
+\begin{lstlisting}[style=php, caption={forClinic() state.}, label={lst:for-clinic}]
+public function forClinic(Clinic $clinic): static
+{
+    return $this->state(['clinic_id' => $clinic->id]);
+}
+\end{lstlisting}
+
+The \texttt{forClinic()} method accepts a \texttt{Clinic} \emph{model
+instance}, not a raw string UUID. This type declaration has two benefits:
+
+\begin{enumerate}
+  \item \textbf{IDE autocomplete.} Passing a \texttt{Clinic} instance
+    to \texttt{forClinic()} allows the IDE to type-check the argument
+    and flag any mismatched types at development time, not at runtime.
+  \item \textbf{Explicit UUID extraction.} \texttt{\$clinic->id} is the
+    UUID string. Accepting the model instance rather than the string
+    prevents callers from accidentally passing an integer ID or a
+    differently typed identifier.
+\end{enumerate}
+
+In tests, this is always used in combination with the clinic created in
+\texttt{setUp()}:
+
+\begin{lstlisting}[style=php, caption={Typical setUp() fixture pattern.}, label={lst:setup-pattern}]
+protected function setUp(): void
+{
+    parent::setUp();
+    $this->clinic    = Clinic::factory()->create();
+    $this->doctor    = User::factory()->doctor()->forClinic($this->clinic)->create();
+    $this->assistant = User::factory()->assistant()->forClinic($this->clinic)->create();
+    $this->actingAsPassport($this->assistant);
+}
+\end{lstlisting}
+
+\subsection{ClinicFactory}
+
+\begin{lstlisting}[
+  style   = php,
+  caption = {database/factories/ClinicFactory.php.},
+  label   = {lst:factory-clinic},
+]
+<?php
+
+namespace Database\Factories;
+
+use App\Models\Clinic;
+use Illuminate\Database\Eloquent\Factories\Factory;
+
+/** @extends Factory<Clinic> */
+class ClinicFactory extends Factory
+{
+    protected $model = Clinic::class;
+
+    public function definition(): array
+    {
+        return [
+            'name'      => fake()->company(),
+            'address'   => fake()->streetAddress(),
+            'phone'     => fake()->numerify('01#########'),
+            'email'     => fake()->unique()->companyEmail(),
+            'is_active' => true,
+        ];
+    }
+
+    /** State: inactive clinic (soft-discontinued branch) */
+    public function inactive(): static
+    {
+        return $this->state(['is_active' => false]);
+    }
+}
+\end{lstlisting}
+
+\textbf{Notes on \texttt{ClinicFactory}.}
+
+\begin{itemize}
+  \item \texttt{fake()->numerify('01\#\#\#\#\#\#\#\#\#\#')} generates
+    an 11-digit phone number with \texttt{01} prefix, matching the
+    Egyptian mobile number format used in the domain. The \texttt{\#}
+    placeholder is replaced with a random digit.
+  \item \texttt{fake()->unique()->companyEmail()} ensures no two
+    test clinics share an email address within a test run. The
+    \texttt{unique()} modifier maintains a per-faker-instance registry
+    of previously generated values and retries on collision.
+  \item \textbf{The \texttt{protected \$model} declaration} is required
+    on concrete factory subclasses for models whose class name cannot
+    be automatically inferred from the factory class name using
+    Laravel's naming convention. Since \phpclass{ClinicFactory}
+    correctly maps to \phpclass{Clinic} by convention, this is
+    technically redundant but is included for clarity.
+\end{itemize}
+
+\subsection{PatientFactory}
+
+\begin{lstlisting}[
+  style   = php,
+  caption = {database/factories/PatientFactory.php.},
+  label   = {lst:factory-patient},
+]
+<?php
+
+namespace Database\Factories;
+
+use App\Enums\Gender;
+use App\Models\Clinic;
+use App\Models\Patient;
+use Illuminate\Database\Eloquent\Factories\Factory;
+
+/** @extends Factory<Patient> */
+class PatientFactory extends Factory
+{
+    protected $model = Patient::class;
+
+    public function definition(): array
+    {
+        return [
+            'clinic_id'     => Clinic::factory(),
+            'name'          => fake()->name(),
+            'email'         => fake()->unique()->safeEmail(),
+            'phone'         => fake()->numerify('01#########'),
+            'date_of_birth' => fake()->date('Y-m-d', '-18 years'),
+            'gender'        => fake()->randomElement([Gender::MALE, Gender::FEMALE]),
+            'address'       => fake()->address(),
+        ];
+    }
+}
+\end{lstlisting}
+
+\textbf{Notes on \texttt{PatientFactory}.}
+
+\begin{itemize}
+  \item \textbf{\texttt{'clinic\_id' => Clinic::factory()}} demonstrates
+    factory chaining. When \texttt{PatientFactory::create()} is called
+    without an explicit \texttt{clinic\_id}, Laravel automatically
+    calls \texttt{Clinic::factory()->create()} to produce a Clinic
+    record and uses its UUID as the \texttt{clinic\_id}. When a test
+    provides \texttt{clinic\_id} explicitly (e.g.\
+    \texttt{Patient::factory()->create(['clinic\_id' => \$this->clinic->id])}),
+    the chained factory is skipped entirely.
+
+  \item \textbf{\texttt{fake()->date('Y-m-d', '-18 years')}} generates
+    a birth date for a person who is at least 18 years old (the
+    \texttt{'-18 years'} argument is the maximum date, not minimum
+    age). This ensures test patients are always legal adults.
+
+  \item \textbf{Enum in \texttt{randomElement}.} Passing enum cases
+    to \texttt{randomElement()} works because the factory's
+    \texttt{definition()} return value is the raw PHP array that
+    Eloquent receives before applying casts. Eloquent's
+    \texttt{Gender} cast accepts either a \texttt{Gender} enum
+    instance or its raw string value.
+\end{itemize}
+
+\subsection{DoctorScheduleFactory}
+
+\begin{lstlisting}[
+  style   = php,
+  caption = {database/factories/DoctorScheduleFactory.php.},
+  label   = {lst:factory-schedule},
+]
+<?php
+
+namespace Database\Factories;
+
+use App\Models\Clinic;
+use App\Models\DoctorSchedule;
+use App\Models\User;
+use Illuminate\Database\Eloquent\Factories\Factory;
+
+/** @extends Factory<DoctorSchedule> */
+class DoctorScheduleFactory extends Factory
+{
+    protected $model = DoctorSchedule::class;
+
+    public function definition(): array
+    {
+        return [
+            'doctor_id'     => User::factory()->doctor(),
+            'clinic_id'     => Clinic::factory(),
+            'day_of_week'   => 1,         // Monday (1 = Monday in Carbon)
+            'start_time'    => '08:00',
+            'end_time'      => '17:00',
+            'slot_duration' => 60,         // 60-minute slots
+            'is_active'     => true,
+        ];
+    }
+
+    public function inactive(): static
+    {
+        return $this->state(['is_active' => false]);
+    }
+}
+\end{lstlisting}
+
+\textbf{Fixed defaults for predictable tests.} Unlike most factories,
+\phpclass{DoctorScheduleFactory} uses fixed rather than randomised
+time values. This is deliberate: tests that exercise the slot
+computation algorithm need to know exactly how many slots the schedule
+will produce so they can write precise \texttt{assertCount()} assertions.
+
+A schedule with \texttt{start\_time='08:00'}, \texttt{end\_time='17:00'},
+and \texttt{slot\_duration=60} produces exactly
+$\lfloor(17{:}00 - 08{:}00) / 60\text{ min}\rfloor = 9$ slots:
+\texttt{08:00, 09:00, 10:00, 11:00, 12:00, 13:00, 14:00, 15:00, 16:00}.
+
+\subsection{AppointmentFactory --- The Static Counter Technique}
+\label{sec:appt-factory}
+
+\phpclass{AppointmentFactory} is the most technically intricate factory
+in the suite, requiring a solution to the composite unique index
+constraint on \texttt{(doctor\_id, appointment\_date, start\_time)}.
+
+\begin{lstlisting}[
+  style   = php,
+  caption = {database/factories/AppointmentFactory.php --- complete source.},
+  label   = {lst:factory-appt},
+]
+<?php
+
+namespace Database\Factories;
+
+use App\Enums\AppointmentStatus;
+use App\Models\Appointment;
+use App\Models\Clinic;
+use App\Models\Patient;
+use App\Models\User;
+use Illuminate\Database\Eloquent\Factories\Factory;
+
+/** @extends Factory<Appointment> */
+class AppointmentFactory extends Factory
+{
+    protected $model = Appointment::class;
+
+    public function definition(): array
+    {
+        $clinic   = Clinic::factory()->create();
+        $doctor   = User::factory()->doctor()->forClinic($clinic)->create();
+        $patient  = Patient::factory()->create(['clinic_id' => $clinic->id]);
+        $bookedBy = User::factory()->assistant()->forClinic($clinic)->create();
+
+        // Static counter cycles start hours from 08 to 16 (9 distinct values)
+        // to avoid the unique index on (doctor_id, appointment_date, start_time)
+        // when creating multiple appointments for the same doctor in a batch.
+        static $hour = 8;
+        $startHour = ($hour++ % 9) + 8;   // 8, 9, 10, 11, 12, 13, 14, 15, 16
+        $start     = sprintf('%02d:00', $startHour);
+        $end       = sprintf('%02d:00', $startHour + 1);
+
+        return [
+            'clinic_id'        => $clinic->id,
+            'doctor_id'        => $doctor->id,
+            'patient_id'       => $patient->id,
+            'booked_by'        => $bookedBy->id,
+            'appointment_date' => now()->next('Monday')->format('Y-m-d'),
+            'start_time'       => $start,
+            'end_time'         => $end,
+            'status'           => AppointmentStatus::PENDING,
+            'notes'            => null,
+        ];
+    }
+
+    public function confirmed(): static
+    {
+        return $this->state(['status' => AppointmentStatus::CONFIRMED]);
+    }
+
+    public function completed(): static
+    {
+        return $this->state(['status' => AppointmentStatus::COMPLETED]);
+    }
+
+    public function cancelled(): static
+    {
+        return $this->state(['status' => AppointmentStatus::CANCELLED]);
+    }
+}
+\end{lstlisting}
+
+\subsubsection{The Unique Index Problem}
+
+The \texttt{appointments} table has a composite unique index:
+
+\begin{lstlisting}[style=php, label={lst:unique-idx}]
+$table->unique(['doctor_id', 'appointment_date', 'start_time']);
+\end{lstlisting}
+
+Without the static counter, if a test creates two appointment records
+for the same doctor on the same date and both use the hardcoded
+default \texttt{start\_time = '09:00'}, MySQL raises:
+
+\begin{lstlisting}[
+  style   = bash,
+  caption = {Unique key violation error without the static counter.},
+  label   = {lst:unique-error},
+]
+SQLSTATE[23000]: Integrity constraint violation: 1062
+Duplicate entry 'uuid-2026-06-16-09:00:00' for key
+'appointments_doctor_id_appointment_date_start_time_unique'
+\end{lstlisting}
+
+This error does not indicate a bug in the application code; it is a
+test data construction problem.
+
+\subsubsection{The Static Counter Solution}
+
+The \texttt{static \$hour = 8} declaration inside \texttt{definition()}
+creates a PHP class-static variable. In PHP, a \texttt{static} variable
+inside a function retains its value between calls to that function within
+the same process. It is different from a method-level local variable
+(which is reset on every call) and from a class-level static property
+(which is declared on the class, not inside a method).
+
+The arithmetic \texttt{(\$hour++ \% 9) + 8} operates as follows:
+
+\begin{table}[h!]
+  \centering
+  \caption{Static counter cycle: start hour produced on each factory call.}
+  \label{tab:hour-cycle}
+  \renewcommand{\arraystretch}{1.4}
+  \begin{tabular}{@{}ccccc@{}}
+    \toprule
+    \rowcolor{PrimaryBlue}
+    \tblhdr{Call} & \tblhdr{\$hour (before)} & \tblhdr{\$hour \% 9}
+      & \tblhdr{+ 8} & \tblhdr{start\_time} \\
+    \midrule
+    1  & 8  & 8  & 16 & \texttt{16:00} \\
+    \rowalt
+    2  & 9  & 0  & 8  & \texttt{08:00} \\
+    3  & 10 & 1  & 9  & \texttt{09:00} \\
+    \rowalt
+    4  & 11 & 2  & 10 & \texttt{10:00} \\
+    5  & 12 & 3  & 11 & \texttt{11:00} \\
+    \rowalt
+    6  & 13 & 4  & 12 & \texttt{12:00} \\
+    7  & 14 & 5  & 13 & \texttt{13:00} \\
+    \rowalt
+    8  & 15 & 6  & 14 & \texttt{14:00} \\
+    9  & 16 & 7  & 15 & \texttt{15:00} \\
+    \rowalt
+    10 & 17 & 8  & 16 & \texttt{16:00} \\
+    11 & 18 & 0  & 8  & \texttt{08:00} \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+The cycle produces 9 distinct start times (08:00 through 16:00) and
+then repeats. This covers any test case that creates up to 9 appointments
+for the same doctor on the same date without collision. Tests that need
+more than 9 appointments for the same doctor should provide explicit
+\texttt{start\_time} overrides.
+
+\begin{warningbox}[Static Counter Scope]
+  The static counter is process-scoped, not test-scoped. If PHPUnit
+  runs tests in the same PHP process (which is the default), the counter
+  retains its value between tests. This is intentional: it means each
+  test gets a fresh, never-before-used start time for any factory-created
+  appointments. However, if the \phpclass{RefreshDatabase} trait rolls
+  back a test's appointment records and the next test creates appointments
+  for a \emph{different} doctor, the counter will start at whatever value
+  it left off at, still producing valid unique times.
+\end{warningbox}
+
+\subsubsection{Self-Contained Relationship Creation in \texttt{definition()}}
+
+Unlike other factories, \phpclass{AppointmentFactory::definition()} calls
+\texttt{::create()} directly (not \texttt{::factory()}) for its related
+models. This is because four related records (clinic, doctor, patient,
+assistant) must be created \emph{before} the appointment's start time is
+computed, and all four must be consistent with each other (same clinic).
+
+The trade-off is that the factory is slower than a factory that uses
+deferred factory references, and it always creates four extra records per
+appointment in addition to the appointment itself. In tests that supply
+all four related IDs as overrides, this behaviour is bypassed:
+
+\begin{lstlisting}[style=php, caption={Overriding all relationships avoids the factory chain.}, label={lst:appt-override}]
+// The definition() closure still runs, but the override array
+// replaces clinic_id, doctor_id, patient_id, and booked_by
+// AFTER the inner create() calls have already fired.
+// To avoid the overhead, pass all four IDs explicitly:
+$appt = Appointment::factory()->create([
+    'clinic_id'        => $this->clinic->id,
+    'doctor_id'        => $this->doctor->id,
+    'patient_id'       => $this->patient->id,
+    'booked_by'        => $this->assistant->id,
+    'appointment_date' => now()->next('Monday')->format('Y-m-d'),
+    'start_time'       => '08:00',
+    'end_time'         => '09:00',
+]);
+// Note: the factory still creates the inner clinic/doctor/patient
+// records because definition() runs first. To avoid this completely,
+// use the constructor pattern if maximum speed is required.
+\end{lstlisting}
+
+\begin{tipbox}[Best Practice]
+  In test \texttt{setUp()} methods, always create the fixture records
+  once (clinic, doctor, assistant, patient) and reuse them across all
+  tests in the class by passing their IDs as explicit overrides to the
+  factory. This minimises database writes per test and makes the test
+  data model explicit rather than hidden inside the factory.
+\end{tipbox}
+
+\subsection{PrescriptionFactory and PrescriptionItemFactory}
+
+\begin{lstlisting}[
+  style   = php,
+  caption = {database/factories/PrescriptionFactory.php.},
+  label   = {lst:factory-rx},
+]
+<?php
+
+namespace Database\Factories;
+
+use App\Models\Appointment;
+use App\Models\Clinic;
+use App\Models\Patient;
+use App\Models\Prescription;
+use App\Models\User;
+use Illuminate\Database\Eloquent\Factories\Factory;
+
+/** @extends Factory<Prescription> */
+class PrescriptionFactory extends Factory
+{
+    protected $model = Prescription::class;
+
+    public function definition(): array
+    {
+        return [
+            'appointment_id' => Appointment::factory(),
+            'doctor_id'      => User::factory()->doctor(),
+            'patient_id'     => Patient::factory(),
+            'clinic_id'      => Clinic::factory(),
+            'diagnosis'      => fake()->sentence(),
+            'notes'          => fake()->optional()->sentence(),
+        ];
+    }
+}
+\end{lstlisting}
+
+\begin{lstlisting}[
+  style   = php,
+  caption = {database/factories/PrescriptionItemFactory.php.},
+  label   = {lst:factory-rx-item},
+]
+<?php
+
+namespace Database\Factories;
+
+use App\Models\Prescription;
+use App\Models\PrescriptionItem;
+use Illuminate\Database\Eloquent\Factories\Factory;
+
+/** @extends Factory<PrescriptionItem> */
+class PrescriptionItemFactory extends Factory
+{
+    protected $model = PrescriptionItem::class;
+
+    public function definition(): array
+    {
+        return [
+            'prescription_id' => Prescription::factory(),
+            'medicine_name'   => fake()->word()
+                                 . ' '
+                                 . fake()->numberBetween(5, 500)
+                                 . 'mg',
+            'dosage'      => fake()->randomElement([
+                                '1 tablet', '2 tablets', '5ml', '10ml'
+                             ]),
+            'frequency'   => fake()->randomElement([
+                                'Once daily', 'Twice daily', 'Three times daily'
+                             ]),
+            'duration'    => fake()->randomElement([
+                                '3 days', '5 days', '7 days', '14 days'
+                             ]),
+            'notes'       => fake()->optional()->sentence(),
+        ];
+    }
+}
+\end{lstlisting}
+
+\textbf{Notes on \texttt{fake()->optional()}.} The \texttt{optional()}
+modifier wraps the subsequent faker call and returns \texttt{null} with
+a configurable probability (default 50\%). This simulates the real-world
+scenario where some prescription items include dispensing notes and
+others do not, without writing a conditional in the factory definition.
+
+%% ─────────────────────────────────────────────────────────────────────────
+\section{Migration Execution and Schema Verification}
+\label{sec:migration-execution}
+%% ─────────────────────────────────────────────────────────────────────────
+
+\begin{lstlisting}[
+  style   = bash,
+  caption = {Running and verifying migrations in development.},
+  label   = {lst:migrate-cmds},
+]
+# Run all pending migrations in order
+php artisan migrate
+
+# Roll back the last batch of migrations (destructive)
+php artisan migrate:rollback
+
+# Show the current migration status
+php artisan migrate:status
+
+# Reset and re-run all migrations (destructive – clears all data)
+php artisan migrate:fresh
+
+# Reset, re-run migrations, and seed
+php artisan migrate:fresh --seed
+
+# Run only migrations for the test database (phpunit.xml overrides)
+php artisan migrate --env=testing
+\end{lstlisting}
+
+\begin{warningbox}[Production Migrations]
+  Never run \texttt{migrate:fresh} or \texttt{migrate:rollback} against
+  a production database. These commands are irreversible and will destroy
+  data. Use \texttt{migrate} (forward-only) in production and always take
+  a database dump before any schema-altering migration run.
+\end{warningbox}
+
+The complete execution order of all domain migrations, from first to
+last, is shown in Table~\ref{tab:migration-order}.
+
+\begin{table}[h!]
+  \centering
+  \caption{Domain migration execution order.}
+  \label{tab:migration-order}
+  \renewcommand{\arraystretch}{1.4}
+  \begin{tabularx}{\linewidth}{@{}C{0.5cm} L{7cm} X@{}}
+    \toprule
+    \rowcolor{PrimaryBlue}
+    \tblhdr{\#} & \tblhdr{Migration File} & \tblhdr{Action} \\
+    \midrule
+    1 & \texttt{0001\_01\_01\_000000\_create\_users\_table}
+        & Creates \texttt{users} (no FK yet), \texttt{password\_reset\_tokens},
+          \texttt{sessions} \\
+    \rowalt
+    2 & \texttt{2026\_06\_05\_202852\_create\_clinics\_table}
+        & Creates \texttt{clinics} \\
+    3 & \texttt{2026\_06\_05\_202918\_create\_patients\_table}
+        & Creates \texttt{patients} with \texttt{clinic\_id} FK \\
+    \rowalt
+    4 & \texttt{2026\_06\_05\_202954\_create\_doctor\_schedules\_table}
+        & Creates \texttt{doctor\_schedules} \\
+    5 & \texttt{2026\_06\_05\_203047\_create\_appointments\_table}
+        & Creates \texttt{appointments} with composite unique index \\
+    \rowalt
+    6 & \texttt{2026\_06\_05\_203107\_create\_prescriptions\_table}
+        & Creates \texttt{prescriptions} \\
+    7 & \texttt{2026\_06\_05\_203128\_create\_prescription\_items\_table}
+        & Creates \texttt{prescription\_items} \\
+    \rowalt
+    8 & \texttt{2026\_06\_11\_000001\_add\_foreign\_key\_to\_users\_clinic\_id}
+        & Alters \texttt{users.clinic\_id} to UUID and adds FK \\
+    9 & \texttt{2026\_06\_11\_000002\_add\_fulltext\_index\_to\_patients}
+        & Adds FULLTEXT index on \texttt{patients(name, phone)} \\
+    \bottomrule
+  \end{tabularx}
+\end{table}

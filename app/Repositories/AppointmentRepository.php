@@ -95,10 +95,13 @@ class AppointmentRepository
 
     public function getBookedTimeSlots(string $doctorId, string $date): array
     {
+        // Normalise to H:i so the comparison in getAvailableSlots() works
+        // regardless of whether the DB driver returns HH:MM or HH:MM:SS.
         return Appointment::where('doctor_id', $doctorId)
             ->whereDate('appointment_date', $date)
             ->where('status', '!=', 'cancelled')
             ->pluck('start_time')
+            ->map(fn(string $t) => substr($t, 0, 5))
             ->toArray();
     }
 }

@@ -3,13 +3,14 @@
 namespace App\Services;
 
 use App\Enums\AppointmentStatus;
+use App\Exceptions\AppointmentConflictException;
+use App\Exceptions\InvalidAppointmentStateException;
 use App\Jobs\SendAppointmentConfirmation;
 use App\Models\Appointment;
 use App\Repositories\AppointmentRepository;
 use App\Repositories\ScheduleRepository;
 use Carbon\Carbon;
 use Illuminate\Support\Facades\Cache;
-use Illuminate\Validation\ValidationException;
 
 class AppointmentService
 {
@@ -68,9 +69,7 @@ class AppointmentService
             $availableSlots = $this->getAvailableSlots($doctorId, $date);
 
             if (! in_array($start, $availableSlots)) {
-                throw ValidationException::withMessages([
-                    'start_time' => ['This time slot is not available.'],
-                ]);
+                throw new AppointmentConflictException();
             }
 
             $dayOfWeek = Carbon::parse($date)->dayOfWeek;
@@ -91,9 +90,7 @@ class AppointmentService
     public function reschedule(Appointment $appointment, array $data): Appointment
     {
         if ($appointment->status === AppointmentStatus::COMPLETED) {
-            throw ValidationException::withMessages([
-                'status' => ['A completed appointment cannot be rescheduled.'],
-            ]);
+            throw new InvalidAppointmentStateException('A completed appointment cannot be rescheduled.');
         }
 
         $doctorId = $appointment->doctor_id;
@@ -103,9 +100,7 @@ class AppointmentService
         $availableSlots = $this->getAvailableSlots($doctorId, $date);
 
         if (! in_array($start, $availableSlots)) {
-            throw ValidationException::withMessages([
-                'start_time' => ['This time slot is not available.'],
-            ]);
+            throw new AppointmentConflictException();
         }
 
         $dayOfWeek = Carbon::parse($date)->dayOfWeek;

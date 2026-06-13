@@ -1,0 +1,1381 @@
+%% ============================================================
+%%  Chapter 2 — System Architecture
+%%  02_architecture.tex
+%% ============================================================
+\chapter{System Architecture}
+\label{chap:architecture}
+
+\chapterintro{%
+  This chapter dissects the internal architecture of the Clinic Management
+  API layer by layer. It traces the complete journey of an HTTP request from
+  network ingress to JSON response, documents every middleware class in the
+  pipeline with its actual PHP source code, explains the routing strategy,
+  and maps the project directory to the architectural responsibility of each
+  directory. Engineers extending the system should read this chapter in full
+  before touching any controller, service, or middleware class.
+}
+
+%% ─────────────────────────────────────────────────────────────────────────
+\section{Architectural Philosophy}
+\label{sec:arch-philosophy}
+%% ─────────────────────────────────────────────────────────────────────────
+
+The application is structured around a strict \textbf{layered architecture}
+with one-directional dependency flow. Each layer knows about the layer
+directly below it and nothing else. This constraint prevents the codebase
+from collapsing into a ball of mud as it grows, and it is what makes the
+73-test PHPUnit suite possible: each layer can be tested in isolation by
+mocking the layer beneath it.
+
+The dependency direction is:
+
+\begin{center}
+  \large
+  \textbf{HTTP Request}
+  $\;\longrightarrow\;$
+  \textbf{Middleware}
+  $\;\longrightarrow\;$
+  \textbf{Controller}
+  $\;\longrightarrow\;$
+  \textbf{Service}
+  $\;\longrightarrow\;$
+  \textbf{Repository}
+  $\;\longrightarrow\;$
+  \textbf{Eloquent / MySQL}
+\end{center}
+
+\vspace{6pt}
+
+Controllers depend on Services and Form Requests. Services depend on
+Repositories. Repositories depend on Eloquent models. At no point does
+a Repository reference a Service, or a Service reference a Controller.
+Violations of this constraint are architectural defects and should be
+treated as bugs.
+
+The application also follows the \textbf{Explicit Over Implicit} principle.
+Every action that modifies data passes through a Form Request (explicit
+validation), a Service (explicit business logic), and a Repository
+(explicit query). There are no raw \texttt{DB::} calls in controllers,
+no business logic in controllers, and no Eloquent queries in controllers.
+
+%% ─────────────────────────────────────────────────────────────────────────
+\section{The Laravel 12 Request Lifecycle}
+\label{sec:request-lifecycle}
+%% ─────────────────────────────────────────────────────────────────────────
+
+Understanding how Laravel 12 processes an HTTP request is essential context
+before examining the application-specific layers. The following description
+traces the path of a request to
+\route{POST /api/v1/assistant/appointments} from the moment it hits the
+server to the moment the JSON response is sent.
+
+\subsection{Stage 1 --- Web Server and PHP-FPM}
+
+The web server (Nginx in the recommended production configuration) receives
+the raw TCP connection. For any request that does not match a static file,
+Nginx passes the request to PHP-FPM via the FastCGI protocol. PHP-FPM
+spawns or reuses a PHP worker process, which begins executing
+\texttt{public/index.php} --- the application's single entry point.
+
+\subsection{Stage 2 --- Bootstrap and Application Kernel}
+
+\texttt{public/index.php} performs three actions:
+
+\begin{enumerate}
+  \item Loads the Composer autoloader (\texttt{vendor/autoload.php}),
+    making every class in the application and its dependencies
+    discoverable by PHP's class-loading mechanism.
+  \item Calls \texttt{require \_\_DIR\_\_.'/../bootstrap/app.php'}, which
+    instantiates the Laravel \texttt{Application} container, registers all
+    service providers listed in \texttt{bootstrap/providers.php}, and
+    configures the routing, middleware, and exception-handling pipelines
+    via the fluent builder returned by \texttt{Application::configure()}.
+  \item Calls \texttt{\$app->handleRequest(Request::capture())} on the
+    configured application instance, which captures the PHP superglobals
+    (\texttt{\$\_GET}, \texttt{\$\_POST}, \texttt{\$\_SERVER}) into a
+    Symfony \texttt{Request} object and passes it into the HTTP kernel.
+\end{enumerate}
+
+\subsection{Stage 3 --- The Global Middleware Stack}
+
+Before the request reaches any route, the HTTP kernel passes it through
+the global middleware stack. For API requests, the relevant global
+middleware layers are:
+
+\begin{itemize}
+  \item \textbf{TrimStrings} and \textbf{ConvertEmptyStringsToNull} ---
+    sanitise all incoming string values.
+  \item \textbf{HandleCors} --- evaluates and appends CORS headers if
+    cross-origin requests are configured.
+  \item \textbf{SubstituteBindings} --- resolves route model binding,
+    turning the \texttt{\{id\}} segment in a URL into a concrete Eloquent
+    model instance via \texttt{findOrFail()}.
+\end{itemize}
+
+\subsection{Stage 4 --- Route Matching}
+
+The router inspects the HTTP method and URL path against the registered
+route definitions in \texttt{routes/api.php}. All API routes are prefixed
+with \texttt{api/} by the framework and with \texttt{v1/} by the
+application's own route group (see Section~\ref{sec:routing}).
+
+If no route matches, Laravel throws a
+\texttt{Symfony\textbackslash{}Component\textbackslash{}Http\textbackslash{}Kernel\textbackslash{}Exception\textbackslash{}NotFoundHttpException},
+which the exception handler renders as a \stnotfound{} JSON response.
+
+\subsection{Stage 5 --- Route-Specific Middleware}
+
+Once a route is matched, the HTTP kernel runs the middleware stack
+attached to that route or route group. For the assistant appointment
+routes, this stack is (in execution order):
+
+\begin{enumerate}
+  \item \texttt{auth:api} --- Laravel Passport validates the bearer token.
+    If the token is absent, expired, or revoked, a
+    \texttt{AuthenticationException} is thrown, which the exception
+    handler renders as \stunauth{}.
+  \item \texttt{role:assistant} --- The custom
+    \phpclass{RoleMiddleware} verifies that the authenticated user's
+    role enum value equals \texttt{"assistant"}. If not, a \stforbid{}
+    JSON response is returned immediately and the request does not
+    proceed further.
+  \item \texttt{clinic.scope} --- The custom
+    \phpclass{ClinicScopeMiddleware} injects the authenticated user's
+    \texttt{clinic\_id} into the request's data bag, preventing
+    clinic-scope forgery.
+\end{enumerate}
+
+\subsection{Stage 6 --- Form Request Resolution and Validation}
+
+Before the controller method is called, Laravel's dependency injection
+container resolves the type-hinted \texttt{FormRequest} subclass from
+the controller's method signature. The Form Request's \texttt{authorize()}
+method is called first (returning \texttt{true} for all requests that
+have already passed middleware), then its \texttt{rules()} method
+provides the validation rules. If validation fails, Laravel throws a
+\texttt{ValidationException} automatically, which the exception handler
+renders as a \stunproc{} response with field-level error messages.
+
+\subsection{Stage 7 --- Controller, Service, and Repository Execution}
+
+The controller method receives the resolved Form Request and any
+route-model-bound Eloquent instances. It delegates immediately to a
+Service class. The Service applies business logic and calls one or more
+Repository methods. The Repository executes the Eloquent query against
+MySQL.
+
+\subsection{Stage 8 --- Resource Transformation and Response}
+
+The controller wraps the model or collection returned by the service in
+a Laravel \texttt{JsonResource} (or \texttt{JsonResource::collection()})
+and passes it to the \texttt{ApiResponse::success()} trait method. This
+method calls \texttt{\$data->toArray(request())} on the resource and
+wraps the result in the standard JSON envelope before returning an
+\texttt{Illuminate\textbackslash{}Http\textbackslash{}JsonResponse}.
+
+\subsection{Stage 9 --- Exception Handling}
+
+If any stage from 1 through 8 throws an exception, PHP unwinds the call
+stack back to the HTTP kernel, which passes the exception to the
+application's exception handler registered in \texttt{bootstrap/app.php}.
+The handler matches the exception type against a priority-ordered list of
+\texttt{\$exceptions->render()} callbacks and returns the appropriate JSON
+response.
+
+The complete request lifecycle is summarised in Table~\ref{tab:lifecycle}.
+
+\begin{table}[h!]
+  \centering
+  \caption{Summary of the HTTP request lifecycle for an API endpoint.}
+  \label{tab:lifecycle}
+  \renewcommand{\arraystretch}{1.5}
+  \begin{tabularx}{\linewidth}{@{}C{0.5cm} L{4cm} X@{}}
+    \toprule
+    \rowcolor{PrimaryBlue}
+    \tblhdr{\#} & \tblhdr{Stage} & \tblhdr{Responsibility} \\
+    \midrule
+    1 & Web Server / PHP-FPM   & TCP accept, FastCGI dispatch \\
+    \rowalt
+    2 & Bootstrap / Kernel     & Autoload, DI container, provider registration \\
+    3 & Global Middleware      & CORS, string sanitisation, binding substitution \\
+    \rowalt
+    4 & Route Matching         & Method + path $\rightarrow$ controller action \\
+    5 & Route Middleware       & \texttt{auth:api}, \texttt{role:X}, \texttt{clinic.scope} \\
+    \rowalt
+    6 & Form Request           & Validation, automatic 422 on failure \\
+    7 & Controller / Service / Repository & Business logic, database I/O \\
+    \rowalt
+    8 & Resource + ApiResponse & Model $\rightarrow$ JSON envelope \\
+    9 & Exception Handler      & Catch any throwable, return structured error JSON \\
+    \bottomrule
+  \end{tabularx}
+\end{table}
+
+%% ─────────────────────────────────────────────────────────────────────────
+\section{Project Directory Structure}
+\label{sec:directory}
+%% ─────────────────────────────────────────────────────────────────────────
+
+The application follows the standard Laravel directory convention with
+additional sub-directories within \texttt{app/} to enforce layer
+separation. The annotated tree below shows every directory that contains
+application code.
+
+\begin{lstlisting}[
+  style     = bash,
+  caption   = {Annotated project directory tree.},
+  label     = {lst:directory},
+  numbers   = none,
+]
+CMS/
+|-- app/
+|   |-- Enums/                  # PHP 8.1 backed enums (type-safe constants)
+|   |   |-- AppointmentStatus.php
+|   |   |-- Gender.php
+|   |   `-- UserRole.php
+|   |
+|   |-- Exceptions/             # Custom domain exception classes
+|   |   |-- AccountDeactivatedException.php
+|   |   |-- AppointmentConflictException.php
+|   |   |-- ClinicScopeViolationException.php
+|   |   |-- InvalidAppointmentStateException.php
+|   |   `-- SelfDemotionException.php
+|   |
+|   |-- Http/
+|   |   |-- Controllers/        # Thin HTTP adapters; no business logic
+|   |   |   |-- Auth/
+|   |   |   |   `-- AuthController.php
+|   |   |   |-- Assistant/
+|   |   |   |   |-- AppointmentController.php
+|   |   |   |   `-- PatientController.php
+|   |   |   |-- Doctor/
+|   |   |   |   |-- AppointmentController.php
+|   |   |   |   |-- PatientController.php
+|   |   |   |   |-- PrescriptionController.php
+|   |   |   |   `-- ScheduleController.php
+|   |   |   `-- SuperAdmin/
+|   |   |       |-- ClinicController.php
+|   |   |       |-- DashboardController.php
+|   |   |       `-- UserController.php
+|   |   |
+|   |   |-- Middleware/         # Cross-cutting request interceptors
+|   |   |   |-- ClinicScopeMiddleware.php
+|   |   |   `-- RoleMiddleware.php
+|   |   |
+|   |   |-- Requests/           # FormRequest validation classes
+|   |   |   |-- Appointment/
+|   |   |   |-- Auth/
+|   |   |   |-- Clinic/
+|   |   |   |-- Patient/
+|   |   |   |-- Prescription/
+|   |   |   |-- Schedule/
+|   |   |   `-- User/
+|   |   |
+|   |   `-- Resources/          # JSON resource transformers
+|   |       |-- AppointmentResource.php
+|   |       |-- ClinicResource.php
+|   |       |-- PatientResource.php
+|   |       |-- PrescriptionItemResource.php
+|   |       |-- PrescriptionResource.php
+|   |       |-- ScheduleResource.php
+|   |       `-- UserResource.php
+|   |
+|   |-- Jobs/                   # Async queue jobs
+|   |   `-- SendAppointmentConfirmation.php
+|   |
+|   |-- Models/                 # Eloquent models (HasUuids on all)
+|   |   |-- Appointment.php
+|   |   |-- Clinic.php
+|   |   |-- DoctorSchedule.php
+|   |   |-- Patient.php
+|   |   |-- Prescription.php
+|   |   |-- PrescriptionItem.php
+|   |   `-- User.php
+|   |
+|   |-- Providers/
+|   |   `-- AppServiceProvider.php
+|   |
+|   |-- Repositories/           # All Eloquent query logic lives here
+|   |   |-- AppointmentRepository.php
+|   |   |-- ClinicRepository.php
+|   |   |-- PatientRepository.php
+|   |   |-- PrescriptionRepository.php
+|   |   |-- ScheduleRepository.php
+|   |   `-- UserRepository.php
+|   |
+|   |-- Services/               # Domain business logic
+|   |   |-- AppointmentService.php
+|   |   |-- AuthService.php
+|   |   |-- ClinicService.php
+|   |   `-- PrescriptionService.php
+|   |
+|   `-- Traits/
+|       `-- ApiResponse.php     # Shared success/error response helpers
+|
+|-- bootstrap/
+|   `-- app.php                 # Application config, middleware, exceptions
+|
+|-- database/
+|   |-- factories/              # Model factories for seeding and tests
+|   |-- migrations/             # Ordered schema migration files
+|   `-- seeders/
+|
+|-- routes/
+|   `-- api.php                 # All API route definitions
+|
+`-- tests/
+    |-- ApiTestCase.php         # Abstract base class for all feature tests
+    `-- Feature/
+        |-- Auth/
+        |-- Assistant/
+        |-- Doctor/
+        `-- SuperAdmin/
+\end{lstlisting}
+
+Table~\ref{tab:dir-responsibilities} maps each directory to its
+architectural role and documents the constraints applied to code in
+that directory.
+
+\begin{longtable}{@{}L{3.8cm} L{2.8cm} X@{}}
+  \toprule
+  \rowcolor{PrimaryBlue}
+  \tblhdr{Directory} & \tblhdr{Layer} & \tblhdr{Constraints} \\
+  \midrule
+  \endfirsthead
+  \toprule
+  \rowcolor{PrimaryBlue}
+  \tblhdr{Directory (cont.)} & \tblhdr{Layer} & \tblhdr{Constraints} \\
+  \midrule
+  \endhead
+  \bottomrule
+  \endfoot
+
+  \texttt{app/Enums}            & Type definitions
+    & No logic. Backed enums only. No imports outside the PHP stdlib. \\
+  \rowalt
+  \texttt{app/Exceptions}       & Exception definitions
+    & Each class \texttt{extends Exception}, defines a default message,
+      and implements a \texttt{render()} method returning a JSON response. \\
+  \texttt{app/Http/Controllers} & HTTP adapter
+    & No Eloquent queries. No \texttt{DB::} calls. No business rules.
+      Delegates immediately to Service or Repository. \\
+  \rowalt
+  \texttt{app/Http/Middleware}  & Request pipeline
+    & May read from \texttt{Request} and \texttt{User}. May return early
+      with a response or call \texttt{\$next(\$request)}. \\
+  \texttt{app/Http/Requests}    & Validation
+    & Defines \texttt{rules()}, \texttt{authorize()}, and optionally
+      \texttt{messages()}. No direct DB access. \\
+  \rowalt
+  \texttt{app/Http/Resources}   & Serialisation
+    & Transforms a model into a JSON-safe array. No queries. \\
+  \texttt{app/Jobs}             & Async work
+    & Implements \texttt{ShouldQueue}. Receives model or value objects.
+      Does not depend on the HTTP request object. \\
+  \rowalt
+  \texttt{app/Models}           & ORM wrappers
+    & Declares \texttt{\$fillable}, \texttt{\$casts}, relationships,
+      and the \texttt{HasUuids} trait. No business logic. \\
+  \texttt{app/Repositories}     & Data access
+    & All Eloquent queries live here. Called by Services only.
+      Returns model instances or collections. \\
+  \rowalt
+  \texttt{app/Services}         & Business logic
+    & Calls Repositories. Throws domain Exceptions. Dispatches Jobs.
+      No direct HTTP concern. \\
+  \texttt{app/Traits/ApiResponse} & Response helpers
+    & Provides \texttt{success()} and \texttt{error()} methods.
+      Used only by Controllers. \\
+\end{longtable}
+
+%% ─────────────────────────────────────────────────────────────────────────
+\section{The Routing Layer}
+\label{sec:routing}
+%% ─────────────────────────────────────────────────────────────────────────
+
+All API routes are defined in \texttt{routes/api.php}. Laravel
+automatically prefixes every route in this file with \texttt{/api},
+so the application adds the \texttt{v1} version prefix itself.
+
+\subsection{Route Group Strategy}
+
+Routes are organised into four top-level groups, each protecting its
+routes with a combination of the \texttt{auth:api}, \texttt{role}, and
+\texttt{clinic.scope} middleware. The grouping strategy serves two
+purposes: it eliminates middleware repetition and it makes the
+permission model visually obvious to any engineer reading the file.
+
+\begin{lstlisting}[
+  style   = php,
+  caption = {routes/api.php --- complete route file structure.},
+  label   = {lst:routes},
+]
+<?php
+
+use Illuminate\Support\Facades\Route;
+
+// ── Public Routes (no auth required) ────────────────────────
+Route::prefix('v1')->group(function () {
+
+    Route::prefix('auth')->controller(AuthController::class)->group(function () {
+        Route::post('register', 'register');
+        Route::post('login',    'login');
+        Route::middleware('auth:api')->group(function () {
+            Route::post('logout', 'logout');
+            Route::get('me',      'me');
+        });
+    });
+
+    // ── Super Admin Routes ───────────────────────────────────
+    Route::prefix('admin')
+        ->middleware(['auth:api', 'role:super_admin'])
+        ->group(function () {
+
+        Route::apiResource('clinics', ClinicController::class);
+        Route::apiResource('users',   UserController::class);
+        Route::patch('users/{user}/toggle', [UserController::class, 'toggle']);
+        Route::patch('users/{user}/role',   [UserController::class, 'updateRole']);
+        Route::get('dashboard',             [DashboardController::class, 'index']);
+    });
+
+    // ── Doctor Routes ────────────────────────────────────────
+    Route::prefix('doctor')
+        ->middleware(['auth:api', 'role:doctor', 'clinic.scope'])
+        ->group(function () {
+
+        Route::apiResource('schedules',    ScheduleController::class)
+            ->except(['show']);
+        Route::apiResource('appointments', AppointmentController::class)
+            ->only(['index', 'show']);
+        Route::patch('appointments/{id}/status',
+            [AppointmentController::class, 'updateStatus']);
+        Route::apiResource('prescriptions', PrescriptionController::class)
+            ->except(['destroy']);
+        Route::get('patients',       [PatientController::class, 'index']);
+        Route::get('patients/{patient}', [PatientController::class, 'show']);
+    });
+
+    // ── Assistant Routes ─────────────────────────────────────
+    Route::prefix('assistant')
+        ->middleware(['auth:api', 'role:assistant', 'clinic.scope'])
+        ->group(function () {
+
+        Route::get('available-slots', [AppointmentController::class, 'availableSlots']);
+        Route::apiResource('appointments', AppointmentController::class)
+            ->except(['show'])->only(['index', 'store', 'update', 'destroy']);
+        Route::get('appointments/{appointment}',
+            [AppointmentController::class, 'show']);
+        Route::apiResource('patients', PatientController::class)
+            ->except(['destroy']);
+    });
+});
+\end{lstlisting}
+
+\subsection{Route Model Binding}
+
+Laravel's implicit route model binding is active for all routes that
+include a route segment whose name matches an Eloquent model's
+lowercase class name (e.g.\ \texttt{\{clinic\}}, \texttt{\{user\}},
+\texttt{\{patient\}}). The framework calls \texttt{findOrFail()} on
+the model using the value of the path segment as the primary key lookup.
+Since all primary keys are UUIDs, the path segment is a UUID string.
+
+If no record with that UUID exists, Laravel throws a
+\texttt{ModelNotFoundException}, which the exception handler registered
+in \texttt{bootstrap/app.php} intercepts and renders as a \stnotfound{}
+JSON response with the message \texttt{"Resource not found."}.
+
+\begin{notebox}[Route Naming]
+  The \texttt{apiResource()} helper registers up to five named routes
+  with the convention \texttt{resource.index}, \texttt{resource.store},
+  \texttt{resource.show}, \texttt{resource.update}, and
+  \texttt{resource.destroy}. The \texttt{->only()} and \texttt{->except()}
+  fluent methods limit which of the five routes are generated, ensuring
+  that no unintended HTTP method is exposed for a given resource.
+\end{notebox}
+
+\subsection{Controller Namespacing}
+
+The route file uses fully-qualified class names imported at the top via
+\texttt{use} statements (omitted from Listing~\ref{lst:routes} for
+brevity). Each controller is namespaced to its role group:
+\phpclass{App\textbackslash{}Http\textbackslash{}Controllers\textbackslash{}SuperAdmin},
+\phpclass{App\textbackslash{}Http\textbackslash{}Controllers\textbackslash{}Doctor}, and
+\phpclass{App\textbackslash{}Http\textbackslash{}Controllers\textbackslash{}Assistant}.
+This means both \phpclass{Doctor\textbackslash{}PatientController} and
+\phpclass{Assistant\textbackslash{}PatientController} can coexist without
+naming conflicts. Each resolves to a distinct class with distinct
+capability boundaries.
+
+%% ─────────────────────────────────────────────────────────────────────────
+\section{The Middleware Pipeline}
+\label{sec:middleware}
+%% ─────────────────────────────────────────────────────────────────────────
+
+The application uses three middleware classes directly. Two are provided
+by the Laravel/Passport ecosystem (\texttt{auth:api} and
+\texttt{SubstituteBindings}); two are custom application classes.
+
+\begin{table}[h!]
+  \centering
+  \caption{Complete middleware registry for the Clinic Management API.}
+  \label{tab:middleware}
+  \renewcommand{\arraystretch}{1.5}
+  \begin{tabularx}{\linewidth}{@{}L{3.2cm} L{2.8cm} X@{}}
+    \toprule
+    \rowcolor{PrimaryBlue}
+    \tblhdr{Alias / Class} & \tblhdr{Source} & \tblhdr{Responsibility} \\
+    \midrule
+    \texttt{auth:api}
+      & Laravel Passport
+      & Validates the OAuth2 bearer token. Populates
+        \texttt{request()->user()} with the authenticated
+        \texttt{User} model. \\
+    \rowalt
+    \texttt{role:\{role\}}
+      & Custom (\phpclass{RoleMiddleware})
+      & Compares the authenticated user's \texttt{role} enum value
+        against the required role string. Returns \stforbid{} if they
+        do not match. \\
+    \texttt{clinic.scope}
+      & Custom (\phpclass{ClinicScopeMiddleware})
+      & For non-Super-Admin users, merges the authenticated user's
+        \texttt{clinic\_id} into the request data bag, overwriting any
+        client-supplied value. \\
+    \rowalt
+    \texttt{SubstituteBindings}
+      & Laravel Framework
+      & Resolves route model binding: replaces UUID path segments with
+        Eloquent model instances. \\
+    \texttt{TrimStrings}
+      & Laravel Framework
+      & Trims leading and trailing whitespace from all string input fields. \\
+    \rowalt
+    \texttt{ConvertEmptyStrings ToNull}
+      & Laravel Framework
+      & Converts empty string input fields to \texttt{null}. \\
+    \bottomrule
+  \end{tabularx}
+\end{table}
+
+\subsection{Middleware Registration in bootstrap/app.php}
+
+Laravel 12 uses a fluent builder in \texttt{bootstrap/app.php} to
+register middleware aliases. The \texttt{->withMiddleware()} callback
+receives a \texttt{Middleware} builder instance on which the
+\texttt{alias()} method maps short string names to fully-qualified
+class names.
+
+\begin{lstlisting}[
+  style   = php,
+  caption = {bootstrap/app.php --- middleware alias registration.},
+  label   = {lst:bootstrap-middleware},
+]
+->withMiddleware(function (Middleware $middleware): void {
+    $middleware->alias([
+        'clinic.scope' => App\Http\Middleware\ClinicScopeMiddleware::class,
+        'role'         => App\Http\Middleware\RoleMiddleware::class,
+    ]);
+})
+\end{lstlisting}
+
+Once registered, these aliases can be used in route group definitions
+as short string tokens (e.g.\ \texttt{'role:doctor'}), where the
+colon-separated suffix is passed as a runtime parameter to the
+middleware's \texttt{handle()} method.
+
+\subsection{RoleMiddleware --- Full Source and Analysis}
+
+The \phpclass{RoleMiddleware} is the application's role-based access
+control (RBAC) enforcement point. It is called on every request to the
+\texttt{admin}, \texttt{doctor}, and \texttt{assistant} route groups.
+
+\begin{lstlisting}[
+  style   = php,
+  caption = {app/Http/Middleware/RoleMiddleware.php --- full source.},
+  label   = {lst:role-middleware},
+]
+<?php
+
+namespace App\Http\Middleware;
+
+use Closure;
+use Illuminate\Http\Request;
+use Symfony\Component\HttpFoundation\Response;
+
+class RoleMiddleware
+{
+    /**
+     * Handle an incoming request.
+     *
+     * @param  Closure(Request): (Response)  $next
+     */
+    public function handle(Request $request, Closure $next, string $role): Response
+    {
+        $user = $request->user();
+
+        // Guard: unauthenticated users are handled upstream by auth:api,
+        // but a null check here prevents a fatal error if middleware is
+        // applied without auth:api in the stack.
+        if (! $user || $user->role->value !== $role) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Forbidden: You do not have the required permissions.'
+            ], 403);
+        }
+
+        return $next($request);
+    }
+}
+\end{lstlisting}
+
+\textbf{Design analysis.} Several deliberate decisions are embedded in
+this twelve-line class.
+
+\begin{enumerate}
+  \item \textbf{The \texttt{\$role} parameter is a plain string.}
+    The route definition \texttt{'role:super\_admin'} causes Laravel to
+    call \texttt{handle(\$request, \$next, 'super\_admin')}. The
+    middleware does not know which routes it is attached to; it only
+    knows the role it has been asked to enforce. This makes the class
+    reusable across all three role groups without modification.
+
+  \item \textbf{Comparison is against \texttt{role->value}, not
+    \texttt{role} itself.}
+    The \texttt{User} model's \texttt{role} attribute is cast to the
+    \phpclass{UserRole} enum by Eloquent. Directly comparing a
+    \texttt{UserRole} enum instance to the string \texttt{"doctor"}
+    would always return \texttt{false}. The \texttt{->value} accessor
+    extracts the underlying string representation from the enum
+    (\texttt{"super\_admin"}, \texttt{"doctor"}, or
+    \texttt{"assistant"}), making the string comparison correct.
+
+  \item \textbf{The null check on \texttt{\$user} is defensive.}
+    In the normal route stack, \texttt{auth:api} runs before
+    \texttt{role}, so \texttt{\$request->user()} is always non-null
+    when \phpclass{RoleMiddleware} executes. The null check exists to
+    prevent a fatal \texttt{Attempt to read property ``role'' on null}
+    error in the event that the middleware is accidentally applied
+    without the \texttt{auth:api} guard.
+
+  \item \textbf{Early return with \texttt{response()->json()}.}
+    The middleware does not throw an exception. It returns a response
+    directly. This is slightly different from the custom domain
+    exceptions used elsewhere in the application and means that this
+    specific 403 response bypasses the central exception-handler
+    rendering pipeline. The response format (\texttt{success} +
+    \texttt{message}) is manually kept consistent with the
+    \texttt{ApiResponse} trait.
+\end{enumerate}
+
+\subsection{ClinicScopeMiddleware --- Full Source and Analysis}
+
+The \phpclass{ClinicScopeMiddleware} is the first of the two
+data-isolation enforcement layers (the second being the explicit
+ownership checks in individual controllers).
+
+\begin{lstlisting}[
+  style   = php,
+  caption = {app/Http/Middleware/ClinicScopeMiddleware.php --- full source.},
+  label   = {lst:scope-middleware},
+]
+<?php
+
+namespace App\Http\Middleware;
+
+use App\Enums\UserRole;
+use Closure;
+use Illuminate\Http\Request;
+use Symfony\Component\HttpFoundation\Response;
+
+class ClinicScopeMiddleware
+{
+    /**
+     * Handle an incoming request.
+     *
+     * @param  Closure(Request): (Response)  $next
+     */
+    public function handle(Request $request, Closure $next): Response
+    {
+        $user = $request->user();
+
+        // Super Admins operate globally; they bypass all clinic restrictions.
+        if ($user->role === UserRole::SUPER_ADMIN) {
+            return $next($request);
+        }
+
+        // For Doctors and Assistants, forcefully inject their clinic_id
+        // into the request data bag. This overwrites any clinic_id value
+        // the client may have included in their JSON body, preventing
+        // cross-clinic data injection attacks.
+        $request->merge([
+            'clinic_id' => $user->clinic_id
+        ]);
+
+        return $next($request);
+    }
+}
+\end{lstlisting}
+
+\textbf{Design analysis.}
+
+\begin{enumerate}
+  \item \textbf{The Super Admin bypass is explicit.}
+    The condition \texttt{\$user->role === UserRole::SUPER\_ADMIN}
+    compares an enum instance to an enum case --- a type-safe comparison
+    that cannot accidentally match a string. Super Admins are routed
+    through the \texttt{admin} prefix group, which does not include
+    \texttt{clinic.scope} in its middleware stack, so in practice this
+    branch is never hit. It exists as a safety net.
+
+  \item \textbf{\texttt{merge()} overwrites, it does not append.}
+    \texttt{Request::merge()} adds keys to the request's input data
+    bag (accessible via \texttt{request()->all()} and
+    \texttt{\$request->clinic\_id}). If the client already sent a
+    \texttt{clinic\_id} key in their JSON payload, \texttt{merge()}
+    overwrites it with the authenticated user's real value. The client
+    cannot supply a different clinic's ID to gain access to its data.
+
+  \item \textbf{Downstream access via \texttt{\$request->clinic\_id}.}
+    After this middleware runs, any downstream controller, Form Request,
+    or service can read \texttt{\$request->clinic\_id} as if it were
+    a first-class request field. This is used by repository methods such
+    as \texttt{PatientRepository::allForClinic(\$request->clinic\_id)}
+    to automatically filter their queries to the correct clinic.
+
+  \item \textbf{No response is returned early.}
+    Unlike \phpclass{RoleMiddleware}, the scope middleware always calls
+    \texttt{\$next(\$request)} and never short-circuits the pipeline.
+    Clinic-scope violations are discovered later, at the controller
+    level, when the explicit ownership check finds that a fetched
+    model's \texttt{clinic\_id} does not match the injected value.
+\end{enumerate}
+
+%% ─────────────────────────────────────────────────────────────────────────
+\section{The Controller Layer}
+\label{sec:controller-layer}
+%% ─────────────────────────────────────────────────────────────────────────
+
+Controllers in this application are deliberately thin. They perform
+exactly three tasks: receive the validated request, delegate to a
+service or repository, and return a JSON response. They contain no
+business logic, no Eloquent queries, and no conditional branching on
+business rules.
+
+\subsection{The ApiResponse Trait}
+
+Every controller uses the \phpclass{ApiResponse} trait, which provides
+two methods: \texttt{success()} and \texttt{error()}. These methods
+wrap the return value in the standard JSON envelope described in
+Section~\ref{sec:response-envelope}.
+
+\begin{lstlisting}[
+  style   = php,
+  caption = {app/Traits/ApiResponse.php --- the response envelope trait.},
+  label   = {lst:api-response},
+]
+<?php
+
+namespace App\Traits;
+
+use Illuminate\Http\JsonResponse;
+use Illuminate\Http\Resources\Json\JsonResource;
+use Illuminate\Http\Resources\Json\AnonymousResourceCollection;
+
+trait ApiResponse
+{
+    protected function success(
+        mixed  $data    = null,
+        string $message = 'Success',
+        int    $status  = 200,
+    ): JsonResponse {
+        $resolved = match (true) {
+            $data instanceof JsonResource,
+            $data instanceof AnonymousResourceCollection => $data->toArray(request()),
+            is_null($data)                               => null,
+            default                                      => $data,
+        };
+
+        return response()->json([
+            'success' => true,
+            'message' => $message,
+            'data'    => $resolved,
+        ], $status);
+    }
+
+    protected function error(
+        string $message = 'An error occurred',
+        int    $status  = 400,
+        array  $errors  = [],
+    ): JsonResponse {
+        $body = ['success' => false, 'message' => $message];
+
+        if (! empty($errors)) {
+            $body['errors'] = $errors;
+        }
+
+        return response()->json($body, $status);
+    }
+}
+\end{lstlisting}
+
+\begin{warningbox}[Paginated Collections and the \texttt{meta} Key]
+  When \texttt{success()} receives an \texttt{AnonymousResourceCollection}
+  backed by a \texttt{LengthAwarePaginator}, the call to
+  \texttt{toArray(request())} resolves the paginated data into a flat
+  PHP array. The pagination metadata (\texttt{current\_page},
+  \texttt{total}, \texttt{last\_page}) is \emph{not} included in the
+  response envelope. Client code must not rely on a \texttt{meta} key.
+  Pagination is controlled via \texttt{?page=N} query parameters;
+  the API returns the items for the requested page in the \texttt{data}
+  array.
+\end{warningbox}
+
+\subsection{A Representative Controller: AssistantAppointmentController}
+
+The following listing shows the complete
+\phpclass{Assistant\textbackslash{}AppointmentController}. It is the
+most complex controller in the application and illustrates all the
+patterns used throughout the codebase.
+
+\begin{lstlisting}[
+  style   = php,
+  caption = {app/Http/Controllers/Assistant/AppointmentController.php.},
+  label   = {lst:assistant-appt-ctrl},
+]
+<?php
+
+namespace App\Http\Controllers\Assistant;
+
+use App\Exceptions\ClinicScopeViolationException;
+use App\Http\Controllers\Controller;
+use App\Http\Requests\Appointment\AvailableSlotsRequest;
+use App\Http\Requests\Appointment\StoreAppointmentRequest;
+use App\Http\Requests\Appointment\UpdateAppointmentRequest;
+use App\Http\Resources\AppointmentResource;
+use App\Models\Appointment;
+use App\Repositories\AppointmentRepository;
+use App\Repositories\PatientRepository;
+use App\Services\AppointmentService;
+use App\Traits\ApiResponse;
+use Illuminate\Http\JsonResponse;
+use Illuminate\Http\Request;
+
+class AppointmentController extends Controller
+{
+    use ApiResponse;
+
+    public function __construct(
+        private AppointmentRepository $repo,
+        private AppointmentService    $service,
+        private PatientRepository     $patientRepo,
+    ) {}
+
+    public function index(Request $request): JsonResponse
+    {
+        $filters      = array_merge(
+            ['date' => today()->format('Y-m-d')],
+            $request->only(['status', 'date'])
+        );
+        $clinicId     = $request->user()->clinic_id;
+        $appointments = $this->repo->allForClinic($clinicId, $filters);
+
+        return $this->success(
+            data: AppointmentResource::collection($appointments)
+        );
+    }
+
+    public function store(StoreAppointmentRequest $request): JsonResponse
+    {
+        $patient = $this->patientRepo->getPatientById($request->patient_id);
+
+        if ($patient->clinic_id !== $request->user()->clinic_id) {
+            throw new ClinicScopeViolationException(
+                'Patient does not belong to this clinic.'
+            );
+        }
+
+        $data = array_merge($request->validated(), [
+            'clinic_id' => $request->user()->clinic_id,
+            'booked_by' => $request->user()->id,
+        ]);
+
+        $appointment = $this->service->book($data);
+
+        return $this->success(
+            data:    new AppointmentResource($appointment),
+            message: 'Appointment booked successfully',
+            status:  201
+        );
+    }
+
+    public function show(Appointment $appointment): JsonResponse
+    {
+        return $this->success(
+            data: new AppointmentResource($this->repo->find($appointment->id))
+        );
+    }
+
+    public function update(UpdateAppointmentRequest $request,
+                           Appointment $appointment): JsonResponse
+    {
+        $updated = $this->service->reschedule($appointment, $request->validated());
+
+        return $this->success(
+            data:    new AppointmentResource($updated),
+            message: 'Appointment rescheduled successfully'
+        );
+    }
+
+    public function destroy(Appointment $appointment): JsonResponse
+    {
+        $this->service->cancel($appointment);
+
+        return $this->success(message: 'Appointment cancelled successfully');
+    }
+
+    public function availableSlots(AvailableSlotsRequest $request): JsonResponse
+    {
+        $slots = $this->service->getAvailableSlots(
+            $request->doctor_id,
+            $request->date
+        );
+
+        return $this->success(data: ['slots' => $slots]);
+    }
+}
+\end{lstlisting}
+
+Key observations about this controller:
+
+\begin{itemize}
+  \item \textbf{Constructor injection.} The three dependencies
+    (\phpclass{AppointmentRepository}, \phpclass{AppointmentService},
+    \phpclass{PatientRepository}) are injected by Laravel's DI container.
+    The controller never calls \texttt{new} on any of them.
+  \item \textbf{No Eloquent queries.} Every data access goes through a
+    repository method. The controller does not call any static Eloquent
+    methods such as \texttt{Appointment::where()} directly.
+  \item \textbf{No business rules in conditionals.} The only conditional
+    in the controller is the clinic-scope ownership check, which throws a
+    domain exception rather than returning an inline response.
+  \item \textbf{Named arguments throughout.} The \texttt{success()} calls
+    use PHP 8.0 named arguments (\texttt{data:}, \texttt{message:},
+    \texttt{status:}) to make the intent of each parameter explicit.
+\end{itemize}
+
+%% ─────────────────────────────────────────────────────────────────────────
+\section{The Service Layer}
+\label{sec:service-layer}
+%% ─────────────────────────────────────────────────────────────────────────
+
+Service classes are the home of all domain business logic. They are the
+only classes permitted to throw the custom domain exceptions defined in
+\texttt{app/Exceptions}. They are the only classes permitted to dispatch
+queue jobs. They are the only place where multi-step operations
+(e.g.\ validate slot, compute end time, clear cache, create record,
+dispatch job) are orchestrated into a single transactional unit of work.
+
+\subsection{AppointmentService --- Slot Booking with Cache Lock}
+
+The \phpclass{AppointmentService} is the most complex service in the
+application. Its \texttt{book()} method implements a two-phase
+concurrency-safe booking algorithm.
+
+\begin{lstlisting}[
+  style   = php,
+  caption = {app/Services/AppointmentService.php --- book() method.},
+  label   = {lst:appt-service-book},
+]
+public function book(array $data): Appointment
+{
+    $doctorId = $data['doctor_id'];
+    $date     = $data['appointment_date'];
+    $start    = $data['start_time'];
+    $lockKey  = "booking:{$doctorId}:{$date}:{$start}";
+
+    /** @var Appointment $appointment */
+    $appointment = Cache::lock($lockKey, 10)->block(5, function ()
+        use ($data, $doctorId, $date, $start)
+    {
+        // Phase 1: Re-check availability inside the lock.
+        // Between the client's slot enquiry and now, another request
+        // may have booked the same slot. The lock ensures only one
+        // booking attempt proceeds at a time for this slot.
+        $availableSlots = $this->getAvailableSlots($doctorId, $date);
+
+        if (! in_array($start, $availableSlots)) {
+            throw new AppointmentConflictException();
+        }
+
+        // Phase 2: Compute the end time from the schedule's slot_duration.
+        $dayOfWeek = Carbon::parse($date)->dayOfWeek;
+        $schedule  = $this->scheduleRepo->findForDayAndDoctor($doctorId, $dayOfWeek);
+
+        $data['end_time'] = Carbon::parse($start)
+            ->addMinutes($schedule->slot_duration)
+            ->format('H:i:s');
+
+        // Invalidate the slot cache so subsequent slot queries reflect
+        // this booking immediately.
+        Cache::forget($this->slotsCacheKey($doctorId, $date));
+
+        return $this->appointmentRepo->create($data);
+    });
+
+    // Dispatch the confirmation job outside the lock to avoid holding
+    // the lock while the job is being serialised and queued.
+    SendAppointmentConfirmation::dispatch($appointment);
+
+    return $appointment;
+}
+\end{lstlisting}
+
+\textbf{Why \texttt{Cache::lock()::block()?}}
+\texttt{Cache::lock(\$key, \$ttl)} acquires an atomic Redis (or database)
+lock. The \texttt{->block(\$timeout, \$callback)} call blocks for up to
+\texttt{\$timeout} seconds waiting to acquire the lock, then executes the
+callback exclusively. This prevents the following race condition:
+
+\begin{enumerate}
+  \item Client A queries available slots. Slot \texttt{08:00} is available.
+  \item Client B queries available slots. Slot \texttt{08:00} is available.
+  \item Client A submits a booking for \texttt{08:00}.
+  \item Client B submits a booking for \texttt{08:00}.
+  \item Without a lock, both bookings succeed because both read an empty
+    slot before either write completes.
+\end{enumerate}
+
+With the lock, step 4 blocks while step 3's lock is held. When step 3
+releases the lock and Client B's callback runs, it re-checks slot
+availability and finds \texttt{08:00} is now booked. It throws
+\phpclass{AppointmentConflictException}, returning \stconflict{}.
+
+%% ─────────────────────────────────────────────────────────────────────────
+\section{The Repository Layer}
+\label{sec:repository-layer}
+%% ─────────────────────────────────────────────────────────────────────────
+
+Repository classes encapsulate every database query in the application.
+They depend on Eloquent models but return typed results (model instances
+or Eloquent collections). Callers (services) work with the returned
+PHP objects and never construct their own queries.
+
+The application uses concrete repositories without interfaces. This is
+a deliberate pragmatic decision: the codebase does not have a
+requirement to swap database backends, and adding interfaces would double
+the number of files without adding testability value, since Laravel's
+test infrastructure (\texttt{RefreshDatabase} with a real MySQL instance)
+tests the actual repository behaviour end-to-end.
+
+\subsection{AppointmentRepository --- Booked Slot Normalisation}
+\label{sec:time-normalisation}
+
+The repository contains a subtle but critical normalisation in the
+\texttt{getBookedTimeSlots()} method. MySQL's \texttt{TIME} column type
+returns values over the wire as \texttt{HH:MM:SS}
+(e.g.\ \texttt{"08:00:00"}). The slot generator in
+\phpclass{AppointmentService} formats candidate slots as \texttt{HH:MM}
+(e.g.\ \texttt{"08:00"}) using Carbon's \texttt{format('H:i')}. Without
+normalisation, the \texttt{in\_array(\$slotTime, \$bookedTimes)} check
+would never find a match, making every slot appear available even when
+booked.
+
+\begin{lstlisting}[
+  style   = php,
+  caption = {AppointmentRepository --- MySQL TIME normalisation.},
+  label   = {lst:repo-normalise},
+]
+public function getBookedTimeSlots(string $doctorId, string $date): array
+{
+    return Appointment::where('doctor_id', $doctorId)
+        ->whereDate('appointment_date', $date)
+        ->where('status', '!=', 'cancelled')
+        ->pluck('start_time')
+        // Normalise HH:MM:SS (MySQL) -> HH:MM (slot generator format)
+        ->map(fn(string $t) => substr($t, 0, 5))
+        ->toArray();
+}
+\end{lstlisting}
+
+The \texttt{->map(fn(string \$t) => substr(\$t, 0, 5))} call truncates
+the seconds component unconditionally. This is safe because MySQL
+\texttt{TIME} values in this domain never carry a non-zero seconds
+component (all slots are whole-minute boundaries), and \texttt{substr}
+of a string shorter than 5 characters returns the full string without
+error.
+
+%% ─────────────────────────────────────────────────────────────────────────
+\section{The Resource Layer}
+\label{sec:resource-layer}
+%% ─────────────────────────────────────────────────────────────────────────
+
+Laravel API Resources transform Eloquent model instances into JSON-safe
+arrays with explicit field control. Every model in the application has a
+corresponding resource class. Resources serve three purposes:
+
+\begin{enumerate}
+  \item \textbf{Field whitelisting.} A resource explicitly lists every
+    field it exposes. Fields not listed (e.g.\ \texttt{password},
+    internal audit flags) are never included in the response, even if
+    the underlying model carries them.
+  \item \textbf{Relationship expansion.} Eager-loaded relationships are
+    conditionally included using the \texttt{whenLoaded()} helper. If the
+    relationship was not eager-loaded, the key is omitted from the
+    response entirely rather than triggering a lazy-load query.
+  \item \textbf{Type coercion.} Enum values, Carbon date instances, and
+    integer booleans are cast to their appropriate JSON representation
+    within the resource, ensuring consistent output types regardless of
+    how the model was constructed.
+\end{enumerate}
+
+%% ─────────────────────────────────────────────────────────────────────────
+\section{The Job Queue System}
+\label{sec:jobs}
+%% ─────────────────────────────────────────────────────────────────────────
+
+The application ships with one queue job:
+\phpclass{SendAppointmentConfirmation}. This job is dispatched by
+\phpclass{AppointmentService::book()} immediately after every successful
+appointment creation.
+
+The job is designed to be \emph{idempotent}: if it fails and is retried
+by the queue worker, re-executing its logic produces the same observable
+outcome (a single confirmation notification). This property is
+maintained by ensuring the job does not modify any database state; it
+only sends an outbound notification.
+
+In the test environment, the queue driver is set to \texttt{sync},
+which executes the job immediately in-process rather than dispatching
+it to a real queue. This prevents tests from depending on a running
+queue worker and avoids background process leakage between test cases.
+
+\begin{lstlisting}[
+  style   = php,
+  caption = {app/Jobs/SendAppointmentConfirmation.php.},
+  label   = {lst:appt-job},
+]
+<?php
+
+namespace App\Jobs;
+
+use App\Models\Appointment;
+use Illuminate\Contracts\Queue\ShouldQueue;
+use Illuminate\Foundation\Queue\Queueable;
+
+class SendAppointmentConfirmation implements ShouldQueue
+{
+    use Queueable;
+
+    public function __construct(
+        public readonly Appointment $appointment
+    ) {}
+
+    public function handle(): void
+    {
+        // Notification dispatch logic:
+        // $this->appointment->patient->notify(...)
+        // Implementation depends on the configured notification channel.
+    }
+}
+\end{lstlisting}
+
+%% ─────────────────────────────────────────────────────────────────────────
+\section{Bootstrap and Exception Handler Configuration}
+\label{sec:bootstrap}
+%% ─────────────────────────────────────────────────────────────────────────
+
+\texttt{bootstrap/app.php} is the single configuration file that wires
+the application together. It registers middleware aliases, declares the
+exception-rendering pipeline, and ensures that all API requests receive
+JSON error responses regardless of the exception type.
+
+\begin{lstlisting}[
+  style   = php,
+  caption = {bootstrap/app.php --- complete file.},
+  label   = {lst:bootstrap-full},
+]
+<?php
+
+use Illuminate\Foundation\Application;
+use Illuminate\Foundation\Configuration\Exceptions;
+use Illuminate\Foundation\Configuration\Middleware;
+use Illuminate\Http\Request;
+
+return Application::configure(basePath: dirname(__DIR__))
+    ->withRouting(
+        web:      __DIR__.'/../routes/web.php',
+        api:      __DIR__.'/../routes/api.php',
+        commands: __DIR__.'/../routes/console.php',
+        health:   '/up',
+    )
+    ->withMiddleware(function (Middleware $middleware): void {
+        $middleware->alias([
+            'clinic.scope' => App\Http\Middleware\ClinicScopeMiddleware::class,
+            'role'         => App\Http\Middleware\RoleMiddleware::class,
+        ]);
+    })
+    ->withExceptions(function (Exceptions $exceptions): void {
+
+        // Force JSON responses for all exceptions on api/* routes.
+        $exceptions->shouldRenderJsonWhen(
+            fn (Request $request) => $request->is('api/*'),
+        );
+
+        // 401 --- Unauthenticated (Passport token missing or revoked)
+        $exceptions->render(
+            function (\Illuminate\Auth\AuthenticationException $_e,
+                      Request $_request) {
+                return response()->json(
+                    ['success' => false, 'message' => 'Token invalid or expired.'],
+                    401
+                );
+            }
+        );
+
+        // 422 --- Validation failure (FormRequest)
+        $exceptions->render(
+            function (\Illuminate\Validation\ValidationException $e,
+                      Request $_request) {
+                return response()->json(
+                    ['success' => false, 'errors' => $e->errors()],
+                    422
+                );
+            }
+        );
+
+        // 403 --- Laravel authorization gate failure
+        $exceptions->render(
+            function (\Illuminate\Auth\Access\AuthorizationException $_e,
+                      Request $_request) {
+                return response()->json(
+                    ['success' => false, 'message' => 'Insufficient permissions.'],
+                    403
+                );
+            }
+        );
+
+        // 404 --- Route not found
+        $exceptions->render(
+            function (
+                \Symfony\Component\HttpKernel\Exception\NotFoundHttpException $_e,
+                Request $_request
+            ) {
+                return response()->json(
+                    ['success' => false, 'message' => 'Resource not found.'],
+                    404
+                );
+            }
+        );
+
+        // 404 --- Model not found (route model binding)
+        $exceptions->render(
+            function (\Illuminate\Database\Eloquent\ModelNotFoundException $_e,
+                      Request $_request) {
+                return response()->json(
+                    ['success' => false, 'message' => 'Resource not found.'],
+                    404
+                );
+            }
+        );
+
+        // Domain exceptions (AppointmentConflictException,
+        // InvalidAppointmentStateException, ClinicScopeViolationException,
+        // AccountDeactivatedException, SelfDemotionException) are self-
+        // rendering via their render() methods and do not require
+        // explicit registration here.
+    })->create();
+\end{lstlisting}
+
+The \texttt{shouldRenderJsonWhen()} callback ensures that even exceptions
+not explicitly registered (such as a fatal \texttt{Error} during
+development) return a JSON body rather than an HTML stack trace when the
+request path begins with \texttt{api/}. This is critical for API clients
+that cannot parse HTML error pages.
+
+%% ─────────────────────────────────────────────────────────────────────────
+\section{Dependency Injection and the Service Container}
+\label{sec:di-container}
+%% ─────────────────────────────────────────────────────────────────────────
+
+Laravel's service container resolves every class with type-hinted
+constructor parameters automatically. No manual binding is required for
+application classes because the container uses PHP reflection to
+discover the types of constructor parameters and recursively resolves
+their dependencies.
+
+The resolution chain for an incoming request to an assistant appointment
+endpoint is:
+
+\begin{enumerate}
+  \item The container resolves \phpclass{AssistantAppointmentController}.
+    Its constructor requires \phpclass{AppointmentRepository},
+    \phpclass{AppointmentService}, and \phpclass{PatientRepository}.
+  \item The container resolves \phpclass{AppointmentService}. Its
+    constructor requires \phpclass{AppointmentRepository} and
+    \phpclass{ScheduleRepository}.
+  \item The container resolves all repositories. Their constructors
+    have no further dependencies (they rely on static Eloquent model
+    methods internally).
+  \item The container instantiates the controller with all dependencies
+    injected and calls the route-matched action method.
+\end{enumerate}
+
+All resolutions happen once per request, not once per method call. The
+container caches resolved instances within the request lifecycle, so
+both the controller and the service share the same
+\phpclass{AppointmentRepository} instance within a single request.
+
+%% ─────────────────────────────────────────────────────────────────────────
+\section{Environment Configuration}
+\label{sec:environment}
+%% ─────────────────────────────────────────────────────────────────────────
+
+The application is configured through \texttt{.env} files following
+the twelve-factor app methodology. Every environment-specific value
+(database credentials, cache driver, queue driver) is externalised from
+the codebase. Table~\ref{tab:env-vars} documents every
+environment variable consumed by the application.
+
+\begin{table}[h!]
+  \centering
+  \caption{Environment variables and their roles.}
+  \label{tab:env-vars}
+  \renewcommand{\arraystretch}{1.5}
+  \begin{tabularx}{\linewidth}{@{}L{4.2cm} L{3cm} X@{}}
+    \toprule
+    \rowcolor{PrimaryBlue}
+    \tblhdr{Variable} & \tblhdr{Example Value} & \tblhdr{Purpose} \\
+    \midrule
+    \envvar{APP\_KEY}        & base64:...  & Laravel encryption key. Must be 32 random bytes. \\
+    \rowalt
+    \envvar{APP\_ENV}        & production  & Controls debug output and caching behaviour. \\
+    \envvar{DB\_CONNECTION}  & mysql       & Must be \texttt{mysql}; SQLite is not supported. \\
+    \rowalt
+    \envvar{DB\_HOST}        & 127.0.0.1  & MySQL server hostname. \\
+    \envvar{DB\_PORT}        & 3306        & MySQL server port. \\
+    \rowalt
+    \envvar{DB\_DATABASE}    & cms\_prod   & Database name. \\
+    \envvar{DB\_USERNAME}    & cms\_user   & MySQL user with full DML privileges. \\
+    \rowalt
+    \envvar{DB\_PASSWORD}    & ---         & MySQL password (keep in secret manager). \\
+    \envvar{CACHE\_DRIVER}   & redis       & \texttt{redis} for production; \texttt{file} for dev. \\
+    \rowalt
+    \envvar{QUEUE\_CONNECTION}& redis      & \texttt{redis} for prod; \texttt{sync} for tests. \\
+    \envvar{PASSPORT\_...}   & (various)   & OAuth2 client credentials generated by
+                                             \texttt{passport:install}. \\
+    \bottomrule
+  \end{tabularx}
+\end{table}
+
+\begin{importantbox}[Test Environment Overrides]
+  The \texttt{phpunit.xml} file declares the following overrides for the
+  test environment, which take precedence over the \texttt{.env} file
+  during PHPUnit test runs:
+  \texttt{DB\_CONNECTION=mysql}, \texttt{DB\_DATABASE=CMS},
+  \texttt{DB\_USERNAME=root}, \texttt{DB\_PASSWORD=""} (empty string).
+  The test suite uses a real MySQL database, not an in-memory SQLite
+  substitute. This ensures that MySQL-specific behaviour (FULLTEXT
+  indexes, TIME column formatting, UUID storage) is exercised by every
+  test run.
+\end{importantbox}

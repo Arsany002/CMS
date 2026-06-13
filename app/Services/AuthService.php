@@ -2,6 +2,7 @@
 
 namespace App\Services;
 
+use App\Exceptions\AccountDeactivatedException;
 use App\Models\User;
 use App\Repositories\UserRepository;
 use Illuminate\Support\Facades\Hash;
@@ -25,9 +26,7 @@ class AuthService
         }
 
         if (! $user->is_active) {
-            throw ValidationException::withMessages([
-                'email' => ['Your account has been deactivated.'],
-            ]);
+            throw new AccountDeactivatedException();
         }
 
         // PASSPORT DIFFERENCE 1: Use accessToken instead of plainTextToken

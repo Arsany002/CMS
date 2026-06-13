@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers\SuperAdmin;
 
+use App\Exceptions\SelfDemotionException;
 use App\Http\Controllers\Controller;
 use App\Http\Requests\User\StoreUserRequest;
 use App\Http\Requests\User\updateUserRequest;
@@ -98,10 +99,7 @@ class UserController extends Controller
 
         // 2. Prevent a Super Admin from accidentally demoting themselves
         if ($request->user()->id === $user->id && $validated['role'] !== 'super_admin') {
-            return $this->error(
-                message: 'You cannot change your own Super Admin role.',
-                status: 403
-            );
+            throw new SelfDemotionException();
         }
 
         // 3. Update the role in the database

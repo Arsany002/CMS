@@ -1,0 +1,2513 @@
+%% ============================================================
+%%  Chapter 5 — API Endpoints Breakdown
+%%  05_api_endpoints.tex
+%% ============================================================
+\chapter{API Endpoints Breakdown}
+\label{chap:endpoints}
+
+\chapterintro{%
+  This chapter is the authoritative reference catalogue for every HTTP
+  endpoint exposed by the Clinic Management API. Endpoints are organised
+  by role surface: public authentication routes, Super Administrator
+  routes, Doctor routes, and Assistant routes. For every endpoint the
+  catalogue provides the HTTP method and URI, the required request
+  headers, a concrete JSON request payload where applicable, and a
+  concrete JSON success response. All UUID values shown are illustrative
+  examples only.
+}
+
+\begin{notebox}[Common Request Headers]
+  Unless stated otherwise, every authenticated endpoint requires the
+  following two headers:
+  \begin{itemize}
+    \item \texttt{Authorization: Bearer \{access\_token\}} --- the
+      Personal Access Token obtained from the login endpoint.
+    \item \texttt{Accept: application/json} --- instructs Laravel to
+      return JSON error responses rather than HTML for validation
+      failures and exceptions.
+    \item \texttt{Content-Type: application/json} --- required on all
+      \texttt{POST}, \texttt{PUT}, and \texttt{PATCH} requests that
+      carry a JSON body.
+  \end{itemize}
+\end{notebox}
+
+%% =========================================================================
+\section{Authentication Endpoints}
+\label{sec:ep-auth}
+%% =========================================================================
+
+The authentication endpoints are grouped under the
+\route{/api/v1/auth/} prefix. The login endpoint is public; logout and
+profile retrieval require a valid bearer token.
+
+%% ── EP-AUTH-1 ─────────────────────────────────────────────────────────────
+\subsection{Login}
+\label{ep:auth-login}
+
+\begin{table}[h!]
+  \renewcommand{\arraystretch}{1.3}
+  \begin{tabularx}{\linewidth}{@{}L{3cm} X@{}}
+    \toprule
+    \rowcolor{PrimaryBlue}
+    \multicolumn{2}{@{}l}{\tblhdr{POST \quad /api/v1/auth/login}} \\
+    \midrule
+    Authentication & None (public endpoint) \\
+    \rowalt
+    Role Required  & --- \\
+    Success Status & \stok{} \\
+    \bottomrule
+  \end{tabularx}
+\end{table}
+
+Validates the supplied email and password against the database, checks
+that the account is active, and issues a Passport Personal Access Token.
+
+\textbf{Request Headers}
+
+\begin{lstlisting}[style=bash]
+Content-Type: application/json
+Accept: application/json
+\end{lstlisting}
+
+\textbf{Request Body}
+
+\begin{lstlisting}[style=json]
+{
+  "email":    "doctor@clinic-a.example.com",
+  "password": "secret1234"
+}
+\end{lstlisting}
+
+\textbf{Success Response --- HTTP 200 OK}
+
+\begin{lstlisting}[style=json]
+{
+  "success": true,
+  "message": "Login successful.",
+  "data": {
+    "user": {
+      "id":        "9d2b1f4e-3a7c-4e8d-b1f2-3a7c4e8db1f2",
+      "name":      "Dr. Sarah Khalil",
+      "email":     "doctor@clinic-a.example.com",
+      "role":      "doctor",
+      "is_active": true,
+      "clinic_id": "1a2b3c4d-5e6f-7a8b-9c0d-1e2f3a4b5c6d",
+      "clinic": {
+        "id":      "1a2b3c4d-5e6f-7a8b-9c0d-1e2f3a4b5c6d",
+        "name":    "Nile Medical Centre"
+      }
+    },
+    "access_token": "eyJ0eXAiOiJKV1QiLCJhbGciOiJSUzI1NiJ9...",
+    "token_type":   "Bearer"
+  }
+}
+\end{lstlisting}
+
+\textbf{Error Responses}
+
+\begin{lstlisting}[style=json, caption={HTTP 401 --- invalid credentials.}]
+{
+  "success": false,
+  "message": "The provided credentials are incorrect."
+}
+\end{lstlisting}
+
+\begin{lstlisting}[style=json, caption={HTTP 403 --- valid credentials but
+  account is deactivated.}]
+{
+  "success": false,
+  "message": "Your account has been deactivated. Please contact your administrator."
+}
+\end{lstlisting}
+
+%% ── EP-AUTH-2 ─────────────────────────────────────────────────────────────
+\subsection{Logout}
+\label{ep:auth-logout}
+
+\begin{table}[h!]
+  \renewcommand{\arraystretch}{1.3}
+  \begin{tabularx}{\linewidth}{@{}L{3cm} X@{}}
+    \toprule
+    \rowcolor{PrimaryBlue}
+    \multicolumn{2}{@{}l}{\tblhdr{POST \quad /api/v1/auth/logout}} \\
+    \midrule
+    Authentication & Bearer token required \\
+    \rowalt
+    Role Required  & Any authenticated role \\
+    Success Status & \stok{} \\
+    \bottomrule
+  \end{tabularx}
+\end{table}
+
+Revokes the current bearer token by setting \texttt{revoked = 1} in the
+\texttt{oauth\_access\_tokens} table. All subsequent requests bearing
+this token will receive \stunauth{}.
+
+\textbf{Request Headers}
+
+\begin{lstlisting}[style=bash]
+Authorization: Bearer {access_token}
+Accept: application/json
+\end{lstlisting}
+
+\textbf{Request Body} --- None.
+
+\textbf{Success Response --- HTTP 200 OK}
+
+\begin{lstlisting}[style=json]
+{
+  "success": true,
+  "message": "Logged out successfully.",
+  "data":    []
+}
+\end{lstlisting}
+
+%% ── EP-AUTH-3 ─────────────────────────────────────────────────────────────
+\subsection{Get Authenticated User Profile}
+\label{ep:auth-me}
+
+\begin{table}[h!]
+  \renewcommand{\arraystretch}{1.3}
+  \begin{tabularx}{\linewidth}{@{}L{3cm} X@{}}
+    \toprule
+    \rowcolor{PrimaryBlue}
+    \multicolumn{2}{@{}l}{\tblhdr{GET \quad /api/v1/auth/me}} \\
+    \midrule
+    Authentication & Bearer token required \\
+    \rowalt
+    Role Required  & Any authenticated role \\
+    Success Status & \stok{} \\
+    \bottomrule
+  \end{tabularx}
+\end{table}
+
+Returns the full profile of the currently authenticated user, including
+their associated clinic (eager-loaded).
+
+\textbf{Request Headers}
+
+\begin{lstlisting}[style=bash]
+Authorization: Bearer {access_token}
+Accept: application/json
+\end{lstlisting}
+
+\textbf{Request Body} --- None.
+
+\textbf{Success Response --- HTTP 200 OK}
+
+\begin{lstlisting}[style=json]
+{
+  "success": true,
+  "message": "Authenticated user retrieved.",
+  "data": {
+    "id":        "9d2b1f4e-3a7c-4e8d-b1f2-3a7c4e8db1f2",
+    "name":      "Dr. Sarah Khalil",
+    "email":     "doctor@clinic-a.example.com",
+    "role":      "doctor",
+    "is_active": true,
+    "clinic_id": "1a2b3c4d-5e6f-7a8b-9c0d-1e2f3a4b5c6d",
+    "clinic": {
+      "id":      "1a2b3c4d-5e6f-7a8b-9c0d-1e2f3a4b5c6d",
+      "name":    "Nile Medical Centre",
+      "email":   "contact@nile-medical.example.com",
+      "phone":   "+20-2-1234-5678",
+      "address": "12 Corniche El Nil, Cairo, Egypt"
+    }
+  }
+}
+\end{lstlisting}
+
+%% =========================================================================
+\section{Super Administrator Endpoints}
+\label{sec:ep-admin}
+%% =========================================================================
+
+All Super Administrator endpoints are grouped under the
+\route{/api/v1/admin/} prefix and require the \texttt{role:super\_admin}
+middleware. A Doctor or Assistant token will receive \stforbid{} on
+every route in this section.
+
+%% ── EP-ADMIN-1 ────────────────────────────────────────────────────────────
+\subsection{Dashboard --- System KPI Aggregate}
+\label{ep:admin-dashboard}
+
+\begin{table}[h!]
+  \renewcommand{\arraystretch}{1.3}
+  \begin{tabularx}{\linewidth}{@{}L{3cm} X@{}}
+    \toprule
+    \rowcolor{PrimaryBlue}
+    \multicolumn{2}{@{}l}{\tblhdr{GET \quad /api/v1/admin/dashboard}} \\
+    \midrule
+    Authentication & Bearer token required \\
+    \rowalt
+    Role Required  & \texttt{super\_admin} \\
+    Query Params   & \texttt{from\_date} (optional, \texttt{YYYY-MM-DD}),
+                     \texttt{to\_date} (optional, \texttt{YYYY-MM-DD}) \\
+    \rowalt
+    Success Status & \stok{} \\
+    \bottomrule
+  \end{tabularx}
+\end{table}
+
+Returns system-wide aggregate KPIs: total counts for clinics, users,
+patients, and appointments. When \texttt{from\_date} and
+\texttt{to\_date} are supplied, the appointment breakdown is filtered
+to that date range.
+
+\textbf{Request Headers}
+
+\begin{lstlisting}[style=bash]
+Authorization: Bearer {access_token}
+Accept: application/json
+\end{lstlisting}
+
+\textbf{Example Request}
+
+\begin{lstlisting}[style=bash]
+GET /api/v1/admin/dashboard?from_date=2025-01-01&to_date=2025-12-31
+\end{lstlisting}
+
+\textbf{Success Response --- HTTP 200 OK}
+
+\begin{lstlisting}[style=json]
+{
+  "success": true,
+  "message": "Dashboard data retrieved successfully.",
+  "data": {
+    "totals": {
+      "clinics":      4,
+      "users":        27,
+      "patients":     312,
+      "appointments": 891
+    },
+    "appointments_breakdown": {
+      "pending":   143,
+      "confirmed": 210,
+      "completed": 498,
+      "cancelled":  40
+    },
+    "date_range": {
+      "from": "2025-01-01",
+      "to":   "2025-12-31"
+    }
+  }
+}
+\end{lstlisting}
+
+%% ── EP-ADMIN-2 ────────────────────────────────────────────────────────────
+\subsection{List All Clinics}
+\label{ep:admin-clinics-index}
+
+\begin{table}[h!]
+  \renewcommand{\arraystretch}{1.3}
+  \begin{tabularx}{\linewidth}{@{}L{3cm} X@{}}
+    \toprule
+    \rowcolor{PrimaryBlue}
+    \multicolumn{2}{@{}l}{\tblhdr{GET \quad /api/v1/admin/clinics}} \\
+    \midrule
+    Authentication & Bearer token required \\
+    \rowalt
+    Role Required  & \texttt{super\_admin} \\
+    Query Params   & \texttt{page} (integer), \texttt{per\_page} (integer) \\
+    \rowalt
+    Success Status & \stok{} \\
+    \bottomrule
+  \end{tabularx}
+\end{table}
+
+Returns a flat array of all clinic records in the system.
+
+\textbf{Success Response --- HTTP 200 OK}
+
+\begin{lstlisting}[style=json]
+{
+  "success": true,
+  "message": "Clinics retrieved successfully.",
+  "data": [
+    {
+      "id":        "1a2b3c4d-5e6f-7a8b-9c0d-1e2f3a4b5c6d",
+      "name":      "Nile Medical Centre",
+      "email":     "contact@nile-medical.example.com",
+      "phone":     "+20-2-1234-5678",
+      "address":   "12 Corniche El Nil, Cairo, Egypt",
+      "is_active": true,
+      "created_at": "2025-01-15T09:00:00.000000Z"
+    },
+    {
+      "id":        "2b3c4d5e-6f7a-8b9c-0d1e-2f3a4b5c6d7e",
+      "name":      "Delta Health Clinic",
+      "email":     "info@delta-health.example.com",
+      "phone":     "+20-50-9876-5432",
+      "address":   "7 El-Gomhoreya Street, Mansoura, Egypt",
+      "is_active": true,
+      "created_at": "2025-02-03T11:30:00.000000Z"
+    }
+  ]
+}
+\end{lstlisting}
+
+%% ── EP-ADMIN-3 ────────────────────────────────────────────────────────────
+\subsection{Create Clinic}
+\label{ep:admin-clinics-store}
+
+\begin{table}[h!]
+  \renewcommand{\arraystretch}{1.3}
+  \begin{tabularx}{\linewidth}{@{}L{3cm} X@{}}
+    \toprule
+    \rowcolor{PrimaryBlue}
+    \multicolumn{2}{@{}l}{\tblhdr{POST \quad /api/v1/admin/clinics}} \\
+    \midrule
+    Authentication & Bearer token required \\
+    \rowalt
+    Role Required  & \texttt{super\_admin} \\
+    Success Status & \stcreated{} \\
+    \bottomrule
+  \end{tabularx}
+\end{table}
+
+Creates a new clinic record. The \texttt{name} and \texttt{email} fields
+must be unique across all existing clinics.
+
+\textbf{Request Body}
+
+\begin{lstlisting}[style=json]
+{
+  "name":    "Alexandria Spine Clinic",
+  "email":   "contact@alex-spine.example.com",
+  "phone":   "+20-3-5555-1234",
+  "address": "45 El-Horreya Road, Alexandria, Egypt"
+}
+\end{lstlisting}
+
+\textbf{Validation Rules}
+
+\begin{table}[h!]
+  \renewcommand{\arraystretch}{1.3}
+  \begin{tabularx}{\linewidth}{@{}L{3cm} L{3.5cm} X@{}}
+    \toprule
+    \rowcolor{PrimaryBlue}
+    \tblhdr{Field} & \tblhdr{Rules} & \tblhdr{Notes} \\
+    \midrule
+    \texttt{name}    & required, string, unique & Unique across \texttt{clinics} table. \\
+    \rowalt
+    \texttt{email}   & required, email, unique  & Unique across \texttt{clinics} table. \\
+    \texttt{phone}   & required, string         & No format enforcement. \\
+    \rowalt
+    \texttt{address} & required, string         & Free-text street address. \\
+    \bottomrule
+  \end{tabularx}
+\end{table}
+
+\textbf{Success Response --- HTTP 201 Created}
+
+\begin{lstlisting}[style=json]
+{
+  "success": true,
+  "message": "Clinic created successfully.",
+  "data": {
+    "id":        "3c4d5e6f-7a8b-9c0d-1e2f-3a4b5c6d7e8f",
+    "name":      "Alexandria Spine Clinic",
+    "email":     "contact@alex-spine.example.com",
+    "phone":     "+20-3-5555-1234",
+    "address":   "45 El-Horreya Road, Alexandria, Egypt",
+    "is_active": true,
+    "created_at": "2026-06-14T10:22:00.000000Z"
+  }
+}
+\end{lstlisting}
+
+%% ── EP-ADMIN-4 ────────────────────────────────────────────────────────────
+\subsection{Retrieve Clinic}
+\label{ep:admin-clinics-show}
+
+\begin{table}[h!]
+  \renewcommand{\arraystretch}{1.3}
+  \begin{tabularx}{\linewidth}{@{}L{3cm} X@{}}
+    \toprule
+    \rowcolor{PrimaryBlue}
+    \multicolumn{2}{@{}l}{\tblhdr{GET \quad /api/v1/admin/clinics/\{id\}}} \\
+    \midrule
+    Authentication & Bearer token required \\
+    \rowalt
+    Role Required  & \texttt{super\_admin} \\
+    Path Param     & \texttt{id} --- UUID of the clinic \\
+    \rowalt
+    Success Status & \stok{} \\
+    \bottomrule
+  \end{tabularx}
+\end{table}
+
+\textbf{Success Response --- HTTP 200 OK}
+
+\begin{lstlisting}[style=json]
+{
+  "success": true,
+  "message": "Clinic retrieved successfully.",
+  "data": {
+    "id":        "3c4d5e6f-7a8b-9c0d-1e2f-3a4b5c6d7e8f",
+    "name":      "Alexandria Spine Clinic",
+    "email":     "contact@alex-spine.example.com",
+    "phone":     "+20-3-5555-1234",
+    "address":   "45 El-Horreya Road, Alexandria, Egypt",
+    "is_active": true,
+    "created_at": "2026-06-14T10:22:00.000000Z"
+  }
+}
+\end{lstlisting}
+
+%% ── EP-ADMIN-5 ────────────────────────────────────────────────────────────
+\subsection{Update Clinic}
+\label{ep:admin-clinics-update}
+
+\begin{table}[h!]
+  \renewcommand{\arraystretch}{1.3}
+  \begin{tabularx}{\linewidth}{@{}L{3cm} X@{}}
+    \toprule
+    \rowcolor{PrimaryBlue}
+    \multicolumn{2}{@{}l}{\tblhdr{PUT \quad /api/v1/admin/clinics/\{id\}}} \\
+    \midrule
+    Authentication & Bearer token required \\
+    \rowalt
+    Role Required  & \texttt{super\_admin} \\
+    Path Param     & \texttt{id} --- UUID of the clinic \\
+    \rowalt
+    Success Status & \stok{} \\
+    \bottomrule
+  \end{tabularx}
+\end{table}
+
+Replaces all mutable fields on the clinic record. The uniqueness
+constraints on \texttt{name} and \texttt{email} ignore the current
+record (\texttt{unique:clinics,name,\{id\}}).
+
+\textbf{Request Body}
+
+\begin{lstlisting}[style=json]
+{
+  "name":      "Alexandria Spine \& Neurology Clinic",
+  "email":     "info@alex-spine.example.com",
+  "phone":     "+20-3-5555-9999",
+  "address":   "45 El-Horreya Road, Floor 2, Alexandria, Egypt",
+  "is_active": true
+}
+\end{lstlisting}
+
+\textbf{Success Response --- HTTP 200 OK}
+
+\begin{lstlisting}[style=json]
+{
+  "success": true,
+  "message": "Clinic updated successfully.",
+  "data": {
+    "id":        "3c4d5e6f-7a8b-9c0d-1e2f-3a4b5c6d7e8f",
+    "name":      "Alexandria Spine & Neurology Clinic",
+    "email":     "info@alex-spine.example.com",
+    "phone":     "+20-3-5555-9999",
+    "address":   "45 El-Horreya Road, Floor 2, Alexandria, Egypt",
+    "is_active": true,
+    "created_at": "2026-06-14T10:22:00.000000Z"
+  }
+}
+\end{lstlisting}
+
+%% ── EP-ADMIN-6 ────────────────────────────────────────────────────────────
+\subsection{Delete Clinic}
+\label{ep:admin-clinics-destroy}
+
+\begin{table}[h!]
+  \renewcommand{\arraystretch}{1.3}
+  \begin{tabularx}{\linewidth}{@{}L{3cm} X@{}}
+    \toprule
+    \rowcolor{PrimaryBlue}
+    \multicolumn{2}{@{}l}{\tblhdr{DELETE \quad /api/v1/admin/clinics/\{id\}}} \\
+    \midrule
+    Authentication & Bearer token required \\
+    \rowalt
+    Role Required  & \texttt{super\_admin} \\
+    Path Param     & \texttt{id} --- UUID of the clinic \\
+    \rowalt
+    Success Status & \stok{} \\
+    \bottomrule
+  \end{tabularx}
+\end{table}
+
+Permanently deletes the clinic record. Due to \texttt{ON DELETE CASCADE}
+constraints, all associated user accounts, patient records, and
+appointments are also deleted. Use with caution in production.
+
+\textbf{Success Response --- HTTP 200 OK}
+
+\begin{lstlisting}[style=json]
+{
+  "success": true,
+  "message": "Clinic deleted successfully.",
+  "data":    []
+}
+\end{lstlisting}
+
+%% ── EP-ADMIN-7 ────────────────────────────────────────────────────────────
+\subsection{List All Users}
+\label{ep:admin-users-index}
+
+\begin{table}[h!]
+  \renewcommand{\arraystretch}{1.3}
+  \begin{tabularx}{\linewidth}{@{}L{3cm} X@{}}
+    \toprule
+    \rowcolor{PrimaryBlue}
+    \multicolumn{2}{@{}l}{\tblhdr{GET \quad /api/v1/admin/users}} \\
+    \midrule
+    Authentication & Bearer token required \\
+    \rowalt
+    Role Required  & \texttt{super\_admin} \\
+    Query Params   & \texttt{page}, \texttt{per\_page}, \texttt{clinic\_id}
+                     (optional filter), \texttt{role} (optional filter) \\
+    \rowalt
+    Success Status & \stok{} \\
+    \bottomrule
+  \end{tabularx}
+\end{table}
+
+Returns all user accounts across all clinics. Supports optional
+filtering by \texttt{clinic\_id} and \texttt{role}.
+
+\textbf{Success Response --- HTTP 200 OK}
+
+\begin{lstlisting}[style=json]
+{
+  "success": true,
+  "message": "Users retrieved successfully.",
+  "data": [
+    {
+      "id":        "9d2b1f4e-3a7c-4e8d-b1f2-3a7c4e8db1f2",
+      "name":      "Dr. Sarah Khalil",
+      "email":     "doctor@clinic-a.example.com",
+      "role":      "doctor",
+      "is_active": true,
+      "clinic_id": "1a2b3c4d-5e6f-7a8b-9c0d-1e2f3a4b5c6d",
+      "clinic": {
+        "id":   "1a2b3c4d-5e6f-7a8b-9c0d-1e2f3a4b5c6d",
+        "name": "Nile Medical Centre"
+      }
+    },
+    {
+      "id":        "4d5e6f7a-8b9c-0d1e-2f3a-4b5c6d7e8f9a",
+      "name":      "Mona Hassan",
+      "email":     "assistant@clinic-a.example.com",
+      "role":      "assistant",
+      "is_active": true,
+      "clinic_id": "1a2b3c4d-5e6f-7a8b-9c0d-1e2f3a4b5c6d",
+      "clinic": {
+        "id":   "1a2b3c4d-5e6f-7a8b-9c0d-1e2f3a4b5c6d",
+        "name": "Nile Medical Centre"
+      }
+    }
+  ]
+}
+\end{lstlisting}
+
+%% ── EP-ADMIN-8 ────────────────────────────────────────────────────────────
+\subsection{Create User}
+\label{ep:admin-users-store}
+
+\begin{table}[h!]
+  \renewcommand{\arraystretch}{1.3}
+  \begin{tabularx}{\linewidth}{@{}L{3cm} X@{}}
+    \toprule
+    \rowcolor{PrimaryBlue}
+    \multicolumn{2}{@{}l}{\tblhdr{POST \quad /api/v1/admin/users}} \\
+    \midrule
+    Authentication & Bearer token required \\
+    \rowalt
+    Role Required  & \texttt{super\_admin} \\
+    Success Status & \stcreated{} \\
+    \bottomrule
+  \end{tabularx}
+\end{table}
+
+Creates a new user account and assigns it a role and clinic. The
+password is hashed automatically via the \texttt{hashed} cast on the
+\phpclass{User} model.
+
+\textbf{Request Body}
+
+\begin{lstlisting}[style=json]
+{
+  "name":      "Dr. Omar Farouk",
+  "email":     "omar.farouk@clinic-b.example.com",
+  "password":  "Str0ngP@ss!",
+  "role":      "doctor",
+  "clinic_id": "2b3c4d5e-6f7a-8b9c-0d1e-2f3a4b5c6d7e"
+}
+\end{lstlisting}
+
+\textbf{Validation Rules}
+
+\begin{table}[h!]
+  \renewcommand{\arraystretch}{1.3}
+  \begin{tabularx}{\linewidth}{@{}L{3cm} L{4cm} X@{}}
+    \toprule
+    \rowcolor{PrimaryBlue}
+    \tblhdr{Field} & \tblhdr{Rules} & \tblhdr{Notes} \\
+    \midrule
+    \texttt{name}      & required, string           & Full display name. \\
+    \rowalt
+    \texttt{email}     & required, email, unique    & Unique across \texttt{users} table. \\
+    \texttt{password}  & required, string, min:8    & Stored as Bcrypt hash. \\
+    \rowalt
+    \texttt{role}      & required, in:super\_admin,doctor,assistant
+                                                    & Must be a valid \phpclass{UserRole} value. \\
+    \texttt{clinic\_id}& required\_unless:role,super\_admin, exists:clinics,id
+                                                    & Must reference an existing clinic. Not
+                                                      required for Super Admin accounts. \\
+    \bottomrule
+  \end{tabularx}
+\end{table}
+
+\textbf{Success Response --- HTTP 201 Created}
+
+\begin{lstlisting}[style=json]
+{
+  "success": true,
+  "message": "User created successfully.",
+  "data": {
+    "id":        "5e6f7a8b-9c0d-1e2f-3a4b-5c6d7e8f9a0b",
+    "name":      "Dr. Omar Farouk",
+    "email":     "omar.farouk@clinic-b.example.com",
+    "role":      "doctor",
+    "is_active": true,
+    "clinic_id": "2b3c4d5e-6f7a-8b9c-0d1e-2f3a4b5c6d7e",
+    "clinic": {
+      "id":   "2b3c4d5e-6f7a-8b9c-0d1e-2f3a4b5c6d7e",
+      "name": "Delta Health Clinic"
+    }
+  }
+}
+\end{lstlisting}
+
+%% ── EP-ADMIN-9 ────────────────────────────────────────────────────────────
+\subsection{Retrieve User}
+\label{ep:admin-users-show}
+
+\begin{table}[h!]
+  \renewcommand{\arraystretch}{1.3}
+  \begin{tabularx}{\linewidth}{@{}L{3cm} X@{}}
+    \toprule
+    \rowcolor{PrimaryBlue}
+    \multicolumn{2}{@{}l}{\tblhdr{GET \quad /api/v1/admin/users/\{id\}}} \\
+    \midrule
+    Authentication & Bearer token required \\
+    \rowalt
+    Role Required  & \texttt{super\_admin} \\
+    Path Param     & \texttt{id} --- UUID of the user \\
+    \rowalt
+    Success Status & \stok{} \\
+    \bottomrule
+  \end{tabularx}
+\end{table}
+
+\textbf{Success Response --- HTTP 200 OK}
+
+\begin{lstlisting}[style=json]
+{
+  "success": true,
+  "message": "User retrieved successfully.",
+  "data": {
+    "id":        "5e6f7a8b-9c0d-1e2f-3a4b-5c6d7e8f9a0b",
+    "name":      "Dr. Omar Farouk",
+    "email":     "omar.farouk@clinic-b.example.com",
+    "role":      "doctor",
+    "is_active": true,
+    "clinic_id": "2b3c4d5e-6f7a-8b9c-0d1e-2f3a4b5c6d7e",
+    "clinic": {
+      "id":      "2b3c4d5e-6f7a-8b9c-0d1e-2f3a4b5c6d7e",
+      "name":    "Delta Health Clinic",
+      "email":   "info@delta-health.example.com",
+      "phone":   "+20-50-9876-5432",
+      "address": "7 El-Gomhoreya Street, Mansoura, Egypt"
+    }
+  }
+}
+\end{lstlisting}
+
+%% ── EP-ADMIN-10 ───────────────────────────────────────────────────────────
+\subsection{Update User}
+\label{ep:admin-users-update}
+
+\begin{table}[h!]
+  \renewcommand{\arraystretch}{1.3}
+  \begin{tabularx}{\linewidth}{@{}L{3cm} X@{}}
+    \toprule
+    \rowcolor{PrimaryBlue}
+    \multicolumn{2}{@{}l}{\tblhdr{PUT \quad /api/v1/admin/users/\{id\}}} \\
+    \midrule
+    Authentication & Bearer token required \\
+    \rowalt
+    Role Required  & \texttt{super\_admin} \\
+    Path Param     & \texttt{id} --- UUID of the user \\
+    \rowalt
+    Success Status & \stok{} \\
+    \bottomrule
+  \end{tabularx}
+\end{table}
+
+Updates user profile fields. If \texttt{password} is omitted from the
+payload it remains unchanged. Role and status changes should use their
+dedicated \texttt{PATCH} endpoints.
+
+\textbf{Request Body}
+
+\begin{lstlisting}[style=json]
+{
+  "name":      "Dr. Omar A. Farouk",
+  "email":     "o.farouk@clinic-b.example.com",
+  "clinic_id": "2b3c4d5e-6f7a-8b9c-0d1e-2f3a4b5c6d7e"
+}
+\end{lstlisting}
+
+\textbf{Success Response --- HTTP 200 OK}
+
+\begin{lstlisting}[style=json]
+{
+  "success": true,
+  "message": "User updated successfully.",
+  "data": {
+    "id":        "5e6f7a8b-9c0d-1e2f-3a4b-5c6d7e8f9a0b",
+    "name":      "Dr. Omar A. Farouk",
+    "email":     "o.farouk@clinic-b.example.com",
+    "role":      "doctor",
+    "is_active": true,
+    "clinic_id": "2b3c4d5e-6f7a-8b9c-0d1e-2f3a4b5c6d7e"
+  }
+}
+\end{lstlisting}
+
+%% ── EP-ADMIN-11 ───────────────────────────────────────────────────────────
+\subsection{Delete User}
+\label{ep:admin-users-destroy}
+
+\begin{table}[h!]
+  \renewcommand{\arraystretch}{1.3}
+  \begin{tabularx}{\linewidth}{@{}L{3cm} X@{}}
+    \toprule
+    \rowcolor{PrimaryBlue}
+    \multicolumn{2}{@{}l}{\tblhdr{DELETE \quad /api/v1/admin/users/\{id\}}} \\
+    \midrule
+    Authentication & Bearer token required \\
+    \rowalt
+    Role Required  & \texttt{super\_admin} \\
+    Path Param     & \texttt{id} --- UUID of the user \\
+    \rowalt
+    Success Status & \stok{} \\
+    \bottomrule
+  \end{tabularx}
+\end{table}
+
+Permanently deletes the user account and all Passport tokens belonging
+to it. Historical appointments and prescriptions created by this user
+retain the \texttt{doctor\_id} / \texttt{booked\_by} foreign key value
+but the user record itself is removed.
+
+\textbf{Success Response --- HTTP 200 OK}
+
+\begin{lstlisting}[style=json]
+{
+  "success": true,
+  "message": "User deleted successfully.",
+  "data":    []
+}
+\end{lstlisting}
+
+%% ── EP-ADMIN-12 ───────────────────────────────────────────────────────────
+\subsection{Change User Role}
+\label{ep:admin-users-role}
+
+\begin{table}[h!]
+  \renewcommand{\arraystretch}{1.3}
+  \begin{tabularx}{\linewidth}{@{}L{3cm} X@{}}
+    \toprule
+    \rowcolor{PrimaryBlue}
+    \multicolumn{2}{@{}l}{\tblhdr{PATCH \quad /api/v1/admin/users/\{id\}/role}} \\
+    \midrule
+    Authentication & Bearer token required \\
+    \rowalt
+    Role Required  & \texttt{super\_admin} \\
+    Path Param     & \texttt{id} --- UUID of the user to modify \\
+    \rowalt
+    Restriction    & A Super Administrator cannot change their own role
+                     (\phpclass{SelfDemotionException} --- \stforbid{}) \\
+    \rowalt
+    Success Status & \stok{} \\
+    \bottomrule
+  \end{tabularx}
+\end{table}
+
+Changes the \texttt{role} field on the target user. The only valid
+values are the three \phpclass{UserRole} enum strings.
+
+\textbf{Request Body}
+
+\begin{lstlisting}[style=json]
+{
+  "role": "assistant"
+}
+\end{lstlisting}
+
+\textbf{Success Response --- HTTP 200 OK}
+
+\begin{lstlisting}[style=json]
+{
+  "success": true,
+  "message": "User role updated successfully.",
+  "data": {
+    "id":        "5e6f7a8b-9c0d-1e2f-3a4b-5c6d7e8f9a0b",
+    "name":      "Dr. Omar A. Farouk",
+    "email":     "o.farouk@clinic-b.example.com",
+    "role":      "assistant",
+    "is_active": true,
+    "clinic_id": "2b3c4d5e-6f7a-8b9c-0d1e-2f3a4b5c6d7e"
+  }
+}
+\end{lstlisting}
+
+\textbf{Error Response --- HTTP 403 (self-demotion attempt)}
+
+\begin{lstlisting}[style=json]
+{
+  "success": false,
+  "message": "You cannot change your own role."
+}
+\end{lstlisting}
+
+%% ── EP-ADMIN-13 ───────────────────────────────────────────────────────────
+\subsection{Activate or Deactivate User}
+\label{ep:admin-users-status}
+
+\begin{table}[h!]
+  \renewcommand{\arraystretch}{1.3}
+  \begin{tabularx}{\linewidth}{@{}L{3cm} X@{}}
+    \toprule
+    \rowcolor{PrimaryBlue}
+    \multicolumn{2}{@{}l}{\tblhdr{PATCH \quad /api/v1/admin/users/\{id\}/status}} \\
+    \midrule
+    Authentication & Bearer token required \\
+    \rowalt
+    Role Required  & \texttt{super\_admin} \\
+    Path Param     & \texttt{id} --- UUID of the user \\
+    \rowalt
+    Success Status & \stok{} \\
+    \bottomrule
+  \end{tabularx}
+\end{table}
+
+Toggles the \texttt{is\_active} flag. A deactivated user cannot obtain
+new tokens. Existing tokens are not automatically revoked.
+
+\textbf{Request Body}
+
+\begin{lstlisting}[style=json]
+{
+  "is_active": false
+}
+\end{lstlisting}
+
+\textbf{Success Response --- HTTP 200 OK}
+
+\begin{lstlisting}[style=json]
+{
+  "success": true,
+  "message": "User status updated successfully.",
+  "data": {
+    "id":        "5e6f7a8b-9c0d-1e2f-3a4b-5c6d7e8f9a0b",
+    "name":      "Dr. Omar A. Farouk",
+    "email":     "o.farouk@clinic-b.example.com",
+    "role":      "assistant",
+    "is_active": false,
+    "clinic_id": "2b3c4d5e-6f7a-8b9c-0d1e-2f3a4b5c6d7e"
+  }
+}
+\end{lstlisting}
+
+%% =========================================================================
+\section{Doctor Endpoints}
+\label{sec:ep-doctor}
+%% =========================================================================
+
+All Doctor endpoints are grouped under the \route{/api/v1/doctor/}
+prefix and require both the \texttt{role:doctor} middleware and the
+\texttt{clinic.scope} middleware. Every response is automatically
+constrained to the authenticated doctor's own clinic.
+
+%% ── EP-DOC-1 ──────────────────────────────────────────────────────────────
+\subsection{List Doctor Schedules}
+\label{ep:doctor-schedules-index}
+
+\begin{table}[h!]
+  \renewcommand{\arraystretch}{1.3}
+  \begin{tabularx}{\linewidth}{@{}L{3cm} X@{}}
+    \toprule
+    \rowcolor{PrimaryBlue}
+    \multicolumn{2}{@{}l}{\tblhdr{GET \quad /api/v1/doctor/schedules}} \\
+    \midrule
+    Authentication & Bearer token required \\
+    \rowalt
+    Role Required  & \texttt{doctor} \\
+    Clinic Scope   & Enforced --- only the authenticated doctor's schedules \\
+    \rowalt
+    Success Status & \stok{} \\
+    \bottomrule
+  \end{tabularx}
+\end{table}
+
+Returns all schedule entries belonging to the authenticated doctor.
+
+\textbf{Success Response --- HTTP 200 OK}
+
+\begin{lstlisting}[style=json]
+{
+  "success": true,
+  "message": "Schedules retrieved successfully.",
+  "data": [
+    {
+      "id":            "6f7a8b9c-0d1e-2f3a-4b5c-6d7e8f9a0b1c",
+      "doctor_id":     "9d2b1f4e-3a7c-4e8d-b1f2-3a7c4e8db1f2",
+      "clinic_id":     "1a2b3c4d-5e6f-7a8b-9c0d-1e2f3a4b5c6d",
+      "day_of_week":   1,
+      "start_time":    "09:00",
+      "end_time":      "17:00",
+      "slot_duration": 30
+    },
+    {
+      "id":            "7a8b9c0d-1e2f-3a4b-5c6d-7e8f9a0b1c2d",
+      "doctor_id":     "9d2b1f4e-3a7c-4e8d-b1f2-3a7c4e8db1f2",
+      "clinic_id":     "1a2b3c4d-5e6f-7a8b-9c0d-1e2f3a4b5c6d",
+      "day_of_week":   3,
+      "start_time":    "10:00",
+      "end_time":      "14:00",
+      "slot_duration": 30
+    }
+  ]
+}
+\end{lstlisting}
+
+%% ── EP-DOC-2 ──────────────────────────────────────────────────────────────
+\subsection{Create Doctor Schedule}
+\label{ep:doctor-schedules-store}
+
+\begin{table}[h!]
+  \renewcommand{\arraystretch}{1.3}
+  \begin{tabularx}{\linewidth}{@{}L{3cm} X@{}}
+    \toprule
+    \rowcolor{PrimaryBlue}
+    \multicolumn{2}{@{}l}{\tblhdr{POST \quad /api/v1/doctor/schedules}} \\
+    \midrule
+    Authentication & Bearer token required \\
+    \rowalt
+    Role Required  & \texttt{doctor} \\
+    Clinic Scope   & Enforced \\
+    \rowalt
+    Success Status & \stcreated{} \\
+    \bottomrule
+  \end{tabularx}
+\end{table}
+
+Creates a new weekly schedule entry for the authenticated doctor. At
+most one schedule entry per \texttt{day\_of\_week} is permitted; the
+database enforces a unique constraint on
+\texttt{(doctor\_id, day\_of\_week)}.
+
+\textbf{Request Body}
+
+\begin{lstlisting}[style=json]
+{
+  "day_of_week":   2,
+  "start_time":    "08:00",
+  "end_time":      "13:00",
+  "slot_duration": 20
+}
+\end{lstlisting}
+
+\textbf{Validation Rules}
+
+\begin{table}[h!]
+  \renewcommand{\arraystretch}{1.3}
+  \begin{tabularx}{\linewidth}{@{}L{3.5cm} L{3.5cm} X@{}}
+    \toprule
+    \rowcolor{PrimaryBlue}
+    \tblhdr{Field} & \tblhdr{Rules} & \tblhdr{Notes} \\
+    \midrule
+    \texttt{day\_of\_week}   & required, integer, between:0,6
+                               & 0 = Sunday, 6 = Saturday. \\
+    \rowalt
+    \texttt{start\_time}     & required, date\_format:H:i
+                               & 24-hour format. \\
+    \texttt{end\_time}       & required, date\_format:H:i, after:start\_time
+                               & Must be strictly after \texttt{start\_time}. \\
+    \rowalt
+    \texttt{slot\_duration}  & required, integer, min:5
+                               & Duration in minutes; minimum 5. \\
+    \bottomrule
+  \end{tabularx}
+\end{table}
+
+\textbf{Success Response --- HTTP 201 Created}
+
+\begin{lstlisting}[style=json]
+{
+  "success": true,
+  "message": "Schedule created successfully.",
+  "data": {
+    "id":            "8b9c0d1e-2f3a-4b5c-6d7e-8f9a0b1c2d3e",
+    "doctor_id":     "9d2b1f4e-3a7c-4e8d-b1f2-3a7c4e8db1f2",
+    "clinic_id":     "1a2b3c4d-5e6f-7a8b-9c0d-1e2f3a4b5c6d",
+    "day_of_week":   2,
+    "start_time":    "08:00",
+    "end_time":      "13:00",
+    "slot_duration": 20
+  }
+}
+\end{lstlisting}
+
+%% ── EP-DOC-3 ──────────────────────────────────────────────────────────────
+\subsection{Retrieve Doctor Schedule}
+\label{ep:doctor-schedules-show}
+
+\begin{table}[h!]
+  \renewcommand{\arraystretch}{1.3}
+  \begin{tabularx}{\linewidth}{@{}L{3cm} X@{}}
+    \toprule
+    \rowcolor{PrimaryBlue}
+    \multicolumn{2}{@{}l}{\tblhdr{GET \quad /api/v1/doctor/schedules/\{id\}}} \\
+    \midrule
+    Authentication & Bearer token required \\
+    \rowalt
+    Role Required  & \texttt{doctor} \\
+    Path Param     & \texttt{id} --- UUID of the schedule entry \\
+    \rowalt
+    Success Status & \stok{} \\
+    \bottomrule
+  \end{tabularx}
+\end{table}
+
+\textbf{Success Response --- HTTP 200 OK}
+
+\begin{lstlisting}[style=json]
+{
+  "success": true,
+  "message": "Schedule retrieved successfully.",
+  "data": {
+    "id":            "8b9c0d1e-2f3a-4b5c-6d7e-8f9a0b1c2d3e",
+    "doctor_id":     "9d2b1f4e-3a7c-4e8d-b1f2-3a7c4e8db1f2",
+    "clinic_id":     "1a2b3c4d-5e6f-7a8b-9c0d-1e2f3a4b5c6d",
+    "day_of_week":   2,
+    "start_time":    "08:00",
+    "end_time":      "13:00",
+    "slot_duration": 20
+  }
+}
+\end{lstlisting}
+
+%% ── EP-DOC-4 ──────────────────────────────────────────────────────────────
+\subsection{Update Doctor Schedule}
+\label{ep:doctor-schedules-update}
+
+\begin{table}[h!]
+  \renewcommand{\arraystretch}{1.3}
+  \begin{tabularx}{\linewidth}{@{}L{3cm} X@{}}
+    \toprule
+    \rowcolor{PrimaryBlue}
+    \multicolumn{2}{@{}l}{\tblhdr{PUT \quad /api/v1/doctor/schedules/\{id\}}} \\
+    \midrule
+    Authentication & Bearer token required \\
+    \rowalt
+    Role Required  & \texttt{doctor} \\
+    Path Param     & \texttt{id} --- UUID of the schedule entry \\
+    \rowalt
+    Success Status & \stok{} \\
+    \bottomrule
+  \end{tabularx}
+\end{table}
+
+\textbf{Request Body}
+
+\begin{lstlisting}[style=json]
+{
+  "day_of_week":   2,
+  "start_time":    "09:00",
+  "end_time":      "14:00",
+  "slot_duration": 30
+}
+\end{lstlisting}
+
+\textbf{Success Response --- HTTP 200 OK}
+
+\begin{lstlisting}[style=json]
+{
+  "success": true,
+  "message": "Schedule updated successfully.",
+  "data": {
+    "id":            "8b9c0d1e-2f3a-4b5c-6d7e-8f9a0b1c2d3e",
+    "doctor_id":     "9d2b1f4e-3a7c-4e8d-b1f2-3a7c4e8db1f2",
+    "clinic_id":     "1a2b3c4d-5e6f-7a8b-9c0d-1e2f3a4b5c6d",
+    "day_of_week":   2,
+    "start_time":    "09:00",
+    "end_time":      "14:00",
+    "slot_duration": 30
+  }
+}
+\end{lstlisting}
+
+%% ── EP-DOC-5 ──────────────────────────────────────────────────────────────
+\subsection{Delete Doctor Schedule}
+\label{ep:doctor-schedules-destroy}
+
+\begin{table}[h!]
+  \renewcommand{\arraystretch}{1.3}
+  \begin{tabularx}{\linewidth}{@{}L{3cm} X@{}}
+    \toprule
+    \rowcolor{PrimaryBlue}
+    \multicolumn{2}{@{}l}{\tblhdr{DELETE \quad /api/v1/doctor/schedules/\{id\}}} \\
+    \midrule
+    Authentication & Bearer token required \\
+    \rowalt
+    Role Required  & \texttt{doctor} \\
+    Path Param     & \texttt{id} --- UUID of the schedule entry \\
+    \rowalt
+    Success Status & \stok{} \\
+    \bottomrule
+  \end{tabularx}
+\end{table}
+
+Removes the schedule entry. Future slot availability queries for the
+deleted day will return an empty array.
+
+\textbf{Success Response --- HTTP 200 OK}
+
+\begin{lstlisting}[style=json]
+{
+  "success": true,
+  "message": "Schedule deleted successfully.",
+  "data":    []
+}
+\end{lstlisting}
+
+%% ── EP-DOC-6 ──────────────────────────────────────────────────────────────
+\subsection{List Doctor Appointments}
+\label{ep:doctor-appointments-index}
+
+\begin{table}[h!]
+  \renewcommand{\arraystretch}{1.3}
+  \begin{tabularx}{\linewidth}{@{}L{3cm} X@{}}
+    \toprule
+    \rowcolor{PrimaryBlue}
+    \multicolumn{2}{@{}l}{\tblhdr{GET \quad /api/v1/doctor/appointments}} \\
+    \midrule
+    Authentication & Bearer token required \\
+    \rowalt
+    Role Required  & \texttt{doctor} \\
+    Clinic Scope   & Enforced --- only appointments where \texttt{doctor\_id}
+                     matches the authenticated user \\
+    \rowalt
+    Query Params   & \texttt{date} (optional, \texttt{YYYY-MM-DD}),
+                     \texttt{status} (optional, one of
+                     \texttt{pending|confirmed|completed|cancelled}) \\
+    \rowalt
+    Success Status & \stok{} \\
+    \bottomrule
+  \end{tabularx}
+\end{table}
+
+Returns all appointments assigned to the authenticated doctor, with
+optional filtering by date and status.
+
+\textbf{Success Response --- HTTP 200 OK}
+
+\begin{lstlisting}[style=json]
+{
+  "success": true,
+  "message": "Appointments retrieved successfully.",
+  "data": [
+    {
+      "id":               "9c0d1e2f-3a4b-5c6d-7e8f-9a0b1c2d3e4f",
+      "doctor_id":        "9d2b1f4e-3a7c-4e8d-b1f2-3a7c4e8db1f2",
+      "patient_id":       "0d1e2f3a-4b5c-6d7e-8f9a-0b1c2d3e4f5a",
+      "clinic_id":        "1a2b3c4d-5e6f-7a8b-9c0d-1e2f3a4b5c6d",
+      "booked_by":        "4d5e6f7a-8b9c-0d1e-2f3a-4b5c6d7e8f9a",
+      "appointment_date": "2026-07-01",
+      "start_time":       "09:00",
+      "end_time":         "09:30",
+      "status":           "confirmed",
+      "notes":            "Patient reports recurring lower-back pain.",
+      "patient": {
+        "id":    "0d1e2f3a-4b5c-6d7e-8f9a-0b1c2d3e4f5a",
+        "name":  "Karim Naguib",
+        "phone": "+20-100-111-2222"
+      }
+    }
+  ]
+}
+\end{lstlisting}
+
+%% ── EP-DOC-7 ──────────────────────────────────────────────────────────────
+\subsection{Retrieve Doctor Appointment}
+\label{ep:doctor-appointments-show}
+
+\begin{table}[h!]
+  \renewcommand{\arraystretch}{1.3}
+  \begin{tabularx}{\linewidth}{@{}L{3cm} X@{}}
+    \toprule
+    \rowcolor{PrimaryBlue}
+    \multicolumn{2}{@{}l}{\tblhdr{GET \quad /api/v1/doctor/appointments/\{id\}}} \\
+    \midrule
+    Authentication & Bearer token required \\
+    \rowalt
+    Role Required  & \texttt{doctor} \\
+    Path Param     & \texttt{id} --- UUID of the appointment \\
+    \rowalt
+    Success Status & \stok{} \\
+    \bottomrule
+  \end{tabularx}
+\end{table}
+
+Returns a single appointment record with patient and prescription
+summary (if any) eager-loaded.
+
+\textbf{Success Response --- HTTP 200 OK}
+
+\begin{lstlisting}[style=json]
+{
+  "success": true,
+  "message": "Appointment retrieved successfully.",
+  "data": {
+    "id":               "9c0d1e2f-3a4b-5c6d-7e8f-9a0b1c2d3e4f",
+    "doctor_id":        "9d2b1f4e-3a7c-4e8d-b1f2-3a7c4e8db1f2",
+    "patient_id":       "0d1e2f3a-4b5c-6d7e-8f9a-0b1c2d3e4f5a",
+    "clinic_id":        "1a2b3c4d-5e6f-7a8b-9c0d-1e2f3a4b5c6d",
+    "booked_by":        "4d5e6f7a-8b9c-0d1e-2f3a-4b5c6d7e8f9a",
+    "appointment_date": "2026-07-01",
+    "start_time":       "09:00",
+    "end_time":         "09:30",
+    "status":           "confirmed",
+    "notes":            "Patient reports recurring lower-back pain.",
+    "patient": {
+      "id":           "0d1e2f3a-4b5c-6d7e-8f9a-0b1c2d3e4f5a",
+      "name":         "Karim Naguib",
+      "phone":        "+20-100-111-2222",
+      "email":        "karim.naguib@example.com",
+      "date_of_birth":"1988-03-22",
+      "gender":       "male"
+    },
+    "prescription": null
+  }
+}
+\end{lstlisting}
+
+%% ── EP-DOC-8 ──────────────────────────────────────────────────────────────
+\subsection{Update Appointment Status}
+\label{ep:doctor-appointments-status}
+
+\begin{table}[h!]
+  \renewcommand{\arraystretch}{1.3}
+  \begin{tabularx}{\linewidth}{@{}L{3cm} X@{}}
+    \toprule
+    \rowcolor{PrimaryBlue}
+    \multicolumn{2}{@{}l}{\tblhdr{PATCH \quad /api/v1/doctor/appointments/\{id\}/status}} \\
+    \midrule
+    Authentication & Bearer token required \\
+    \rowalt
+    Role Required  & \texttt{doctor} \\
+    Path Param     & \texttt{id} --- UUID of the appointment \\
+    \rowalt
+    Allowed Transitions & \texttt{pending} $\to$ \texttt{confirmed},
+                          \texttt{confirmed} $\to$ \texttt{completed} \\
+    \rowalt
+    Success Status & \stok{} \\
+    \bottomrule
+  \end{tabularx}
+\end{table}
+
+Advances the appointment's status along the allowed transition path.
+Any other transition (e.g.\ \texttt{completed} $\to$ \texttt{confirmed},
+or any transition from \texttt{cancelled}) raises an
+\phpclass{InvalidAppointmentStateException} (\stunproc{}).
+
+\textbf{Request Body}
+
+\begin{lstlisting}[style=json]
+{
+  "status": "confirmed"
+}
+\end{lstlisting}
+
+\textbf{Success Response --- HTTP 200 OK}
+
+\begin{lstlisting}[style=json]
+{
+  "success": true,
+  "message": "Appointment status updated successfully.",
+  "data": {
+    "id":               "9c0d1e2f-3a4b-5c6d-7e8f-9a0b1c2d3e4f",
+    "appointment_date": "2026-07-01",
+    "start_time":       "09:00",
+    "end_time":         "09:30",
+    "status":           "confirmed",
+    "doctor_id":        "9d2b1f4e-3a7c-4e8d-b1f2-3a7c4e8db1f2",
+    "patient_id":       "0d1e2f3a-4b5c-6d7e-8f9a-0b1c2d3e4f5a"
+  }
+}
+\end{lstlisting}
+
+\textbf{Error Response --- HTTP 422 (invalid transition)}
+
+\begin{lstlisting}[style=json]
+{
+  "success": false,
+  "message": "This appointment cannot be transitioned to the requested status."
+}
+\end{lstlisting}
+
+%% ── EP-DOC-9 ──────────────────────────────────────────────────────────────
+\subsection{List Clinic Patients (Doctor View)}
+\label{ep:doctor-patients-index}
+
+\begin{table}[h!]
+  \renewcommand{\arraystretch}{1.3}
+  \begin{tabularx}{\linewidth}{@{}L{3cm} X@{}}
+    \toprule
+    \rowcolor{PrimaryBlue}
+    \multicolumn{2}{@{}l}{\tblhdr{GET \quad /api/v1/doctor/patients}} \\
+    \midrule
+    Authentication & Bearer token required \\
+    \rowalt
+    Role Required  & \texttt{doctor} \\
+    Clinic Scope   & Enforced \\
+    \rowalt
+    Query Params   & \texttt{search} (optional, full-text search on name
+                     and phone), \texttt{page}, \texttt{per\_page} \\
+    \rowalt
+    Success Status & \stok{} \\
+    \bottomrule
+  \end{tabularx}
+\end{table}
+
+Returns all patients belonging to the authenticated doctor's clinic.
+When \texttt{search} is supplied, a MySQL FULLTEXT search is performed
+across the \texttt{name} and \texttt{phone} columns. Doctors have
+read-only access; write operations are the Assistant's responsibility.
+
+\textbf{Success Response --- HTTP 200 OK}
+
+\begin{lstlisting}[style=json]
+{
+  "success": true,
+  "message": "Patients retrieved successfully.",
+  "data": [
+    {
+      "id":            "0d1e2f3a-4b5c-6d7e-8f9a-0b1c2d3e4f5a",
+      "name":          "Karim Naguib",
+      "phone":         "+20-100-111-2222",
+      "email":         "karim.naguib@example.com",
+      "date_of_birth": "1988-03-22",
+      "gender":        "male",
+      "address":       "33 Talaat Harb Street, Cairo",
+      "clinic_id":     "1a2b3c4d-5e6f-7a8b-9c0d-1e2f3a4b5c6d"
+    }
+  ]
+}
+\end{lstlisting}
+
+%% ── EP-DOC-10 ─────────────────────────────────────────────────────────────
+\subsection{Retrieve Patient (Doctor View)}
+\label{ep:doctor-patients-show}
+
+\begin{table}[h!]
+  \renewcommand{\arraystretch}{1.3}
+  \begin{tabularx}{\linewidth}{@{}L{3cm} X@{}}
+    \toprule
+    \rowcolor{PrimaryBlue}
+    \multicolumn{2}{@{}l}{\tblhdr{GET \quad /api/v1/doctor/patients/\{id\}}} \\
+    \midrule
+    Authentication & Bearer token required \\
+    \rowalt
+    Role Required  & \texttt{doctor} \\
+    Path Param     & \texttt{id} --- UUID of the patient \\
+    \rowalt
+    Clinic Scope   & Enforced --- cross-clinic access raises \stforbid{} \\
+    \rowalt
+    Success Status & \stok{} \\
+    \bottomrule
+  \end{tabularx}
+\end{table}
+
+\textbf{Success Response --- HTTP 200 OK}
+
+\begin{lstlisting}[style=json]
+{
+  "success": true,
+  "message": "Patient retrieved successfully.",
+  "data": {
+    "id":            "0d1e2f3a-4b5c-6d7e-8f9a-0b1c2d3e4f5a",
+    "name":          "Karim Naguib",
+    "phone":         "+20-100-111-2222",
+    "email":         "karim.naguib@example.com",
+    "date_of_birth": "1988-03-22",
+    "gender":        "male",
+    "address":       "33 Talaat Harb Street, Cairo",
+    "clinic_id":     "1a2b3c4d-5e6f-7a8b-9c0d-1e2f3a4b5c6d"
+  }
+}
+\end{lstlisting}
+
+%% ── EP-DOC-11 ─────────────────────────────────────────────────────────────
+\subsection{Create Prescription}
+\label{ep:doctor-prescriptions-store}
+
+\begin{table}[h!]
+  \renewcommand{\arraystretch}{1.3}
+  \begin{tabularx}{\linewidth}{@{}L{3cm} X@{}}
+    \toprule
+    \rowcolor{PrimaryBlue}
+    \multicolumn{2}{@{}l}{\tblhdr{POST \quad /api/v1/doctor/prescriptions}} \\
+    \midrule
+    Authentication & Bearer token required \\
+    \rowalt
+    Role Required  & \texttt{doctor} \\
+    Clinic Scope   & Enforced \\
+    \rowalt
+    Restrictions   & (1) The authenticated doctor must be the doctor on the
+                     referenced appointment. (2) The appointment must not be
+                     in \texttt{cancelled} status. \\
+    \rowalt
+    Success Status & \stcreated{} \\
+    \bottomrule
+  \end{tabularx}
+\end{table}
+
+Creates a prescription header and one or more item records in a single
+database transaction. The prescription is permanently linked to the
+specified appointment.
+
+\textbf{Request Body}
+
+\begin{lstlisting}[style=json]
+{
+  "appointment_id": "9c0d1e2f-3a4b-5c6d-7e8f-9a0b1c2d3e4f",
+  "diagnosis":      "Lumbar disc herniation, L4-L5.",
+  "notes":          "Patient advised to rest and avoid heavy lifting for 4 weeks.",
+  "items": [
+    {
+      "medicine_name": "Ibuprofen",
+      "dosage":        "400mg",
+      "frequency":     "Three times daily after meals",
+      "duration":      "7 days",
+      "notes":         "Take with food to avoid gastric irritation."
+    },
+    {
+      "medicine_name": "Diclofenac Gel 1%",
+      "dosage":        "Apply a thin layer",
+      "frequency":     "Twice daily",
+      "duration":      "14 days",
+      "notes":         null
+    }
+  ]
+}
+\end{lstlisting}
+
+\textbf{Validation Rules}
+
+\begin{table}[h!]
+  \renewcommand{\arraystretch}{1.3}
+  \begin{tabularx}{\linewidth}{@{}L{4cm} L{3.5cm} X@{}}
+    \toprule
+    \rowcolor{PrimaryBlue}
+    \tblhdr{Field} & \tblhdr{Rules} & \tblhdr{Notes} \\
+    \midrule
+    \texttt{appointment\_id} & required, uuid, exists & Must reference an existing
+                                                        appointment. \\
+    \rowalt
+    \texttt{diagnosis}       & required, string        & Free-text clinical diagnosis. \\
+    \texttt{notes}           & nullable, string        & Overall prescription notes. \\
+    \rowalt
+    \texttt{items}           & required, array, min:1  & At least one item required. \\
+    \texttt{items.*.medicine\_name} & required, string & Name of the drug. \\
+    \rowalt
+    \texttt{items.*.dosage}        & required, string & Dose per administration. \\
+    \texttt{items.*.frequency}     & required, string & Frequency instruction. \\
+    \rowalt
+    \texttt{items.*.duration}      & required, string & Course duration. \\
+    \texttt{items.*.notes}         & nullable, string & Per-item notes. \\
+    \bottomrule
+  \end{tabularx}
+\end{table}
+
+\textbf{Success Response --- HTTP 201 Created}
+
+\begin{lstlisting}[style=json]
+{
+  "success": true,
+  "message": "Prescription created successfully.",
+  "data": {
+    "id":             "1e2f3a4b-5c6d-7e8f-9a0b-1c2d3e4f5a6b",
+    "appointment_id": "9c0d1e2f-3a4b-5c6d-7e8f-9a0b1c2d3e4f",
+    "doctor_id":      "9d2b1f4e-3a7c-4e8d-b1f2-3a7c4e8db1f2",
+    "diagnosis":      "Lumbar disc herniation, L4-L5.",
+    "notes":          "Patient advised to rest and avoid heavy lifting for 4 weeks.",
+    "created_at":     "2026-07-01T10:05:00.000000Z",
+    "items": [
+      {
+        "id":            "2f3a4b5c-6d7e-8f9a-0b1c-2d3e4f5a6b7c",
+        "medicine_name": "Ibuprofen",
+        "dosage":        "400mg",
+        "frequency":     "Three times daily after meals",
+        "duration":      "7 days",
+        "notes":         "Take with food to avoid gastric irritation."
+      },
+      {
+        "id":            "3a4b5c6d-7e8f-9a0b-1c2d-3e4f5a6b7c8d",
+        "medicine_name": "Diclofenac Gel 1%",
+        "dosage":        "Apply a thin layer",
+        "frequency":     "Twice daily",
+        "duration":      "14 days",
+        "notes":         null
+      }
+    ]
+  }
+}
+\end{lstlisting}
+
+%% ── EP-DOC-12 ─────────────────────────────────────────────────────────────
+\subsection{Retrieve Prescription}
+\label{ep:doctor-prescriptions-show}
+
+\begin{table}[h!]
+  \renewcommand{\arraystretch}{1.3}
+  \begin{tabularx}{\linewidth}{@{}L{3cm} X@{}}
+    \toprule
+    \rowcolor{PrimaryBlue}
+    \multicolumn{2}{@{}l}{\tblhdr{GET \quad /api/v1/doctor/prescriptions/\{id\}}} \\
+    \midrule
+    Authentication & Bearer token required \\
+    \rowalt
+    Role Required  & \texttt{doctor} \\
+    Path Param     & \texttt{id} --- UUID of the prescription \\
+    \rowalt
+    Restrictions   & Only the authoring doctor may retrieve this resource.
+                     A different doctor receives \stforbid{}. \\
+    \rowalt
+    Success Status & \stok{} \\
+    \bottomrule
+  \end{tabularx}
+\end{table}
+
+Returns the full prescription including all items and the linked
+appointment summary.
+
+\textbf{Success Response --- HTTP 200 OK}
+
+\begin{lstlisting}[style=json]
+{
+  "success": true,
+  "message": "Prescription retrieved successfully.",
+  "data": {
+    "id":             "1e2f3a4b-5c6d-7e8f-9a0b-1c2d3e4f5a6b",
+    "appointment_id": "9c0d1e2f-3a4b-5c6d-7e8f-9a0b1c2d3e4f",
+    "doctor_id":      "9d2b1f4e-3a7c-4e8d-b1f2-3a7c4e8db1f2",
+    "diagnosis":      "Lumbar disc herniation, L4-L5.",
+    "notes":          "Patient advised to rest and avoid heavy lifting for 4 weeks.",
+    "created_at":     "2026-07-01T10:05:00.000000Z",
+    "appointment": {
+      "id":               "9c0d1e2f-3a4b-5c6d-7e8f-9a0b1c2d3e4f",
+      "appointment_date": "2026-07-01",
+      "start_time":       "09:00",
+      "end_time":         "09:30",
+      "status":           "completed"
+    },
+    "items": [
+      {
+        "id":            "2f3a4b5c-6d7e-8f9a-0b1c-2d3e4f5a6b7c",
+        "medicine_name": "Ibuprofen",
+        "dosage":        "400mg",
+        "frequency":     "Three times daily after meals",
+        "duration":      "7 days",
+        "notes":         "Take with food to avoid gastric irritation."
+      },
+      {
+        "id":            "3a4b5c6d-7e8f-9a0b-1c2d-3e4f5a6b7c8d",
+        "medicine_name": "Diclofenac Gel 1%",
+        "dosage":        "Apply a thin layer",
+        "frequency":     "Twice daily",
+        "duration":      "14 days",
+        "notes":         null
+      }
+    ]
+  }
+}
+\end{lstlisting}
+
+%% ── EP-DOC-13 ─────────────────────────────────────────────────────────────
+\subsection{Update Prescription}
+\label{ep:doctor-prescriptions-update}
+
+\begin{table}[h!]
+  \renewcommand{\arraystretch}{1.3}
+  \begin{tabularx}{\linewidth}{@{}L{3cm} X@{}}
+    \toprule
+    \rowcolor{PrimaryBlue}
+    \multicolumn{2}{@{}l}{\tblhdr{PUT \quad /api/v1/doctor/prescriptions/\{id\}}} \\
+    \midrule
+    Authentication & Bearer token required \\
+    \rowalt
+    Role Required  & \texttt{doctor} \\
+    Path Param     & \texttt{id} --- UUID of the prescription \\
+    \rowalt
+    Restrictions   & Only the authoring doctor may update this resource. \\
+    \rowalt
+    Success Status & \stok{} \\
+    \bottomrule
+  \end{tabularx}
+\end{table}
+
+Replaces the prescription header fields and re-syncs the items array.
+Existing items not present in the payload are deleted; new items are
+inserted; existing items with matching \texttt{id} values are updated.
+
+\textbf{Request Body}
+
+\begin{lstlisting}[style=json]
+{
+  "diagnosis": "Lumbar disc herniation, L4-L5 with mild nerve compression.",
+  "notes":     "Follow-up in 2 weeks. Rest and avoid lifting.",
+  "items": [
+    {
+      "medicine_name": "Ibuprofen",
+      "dosage":        "600mg",
+      "frequency":     "Twice daily after meals",
+      "duration":      "10 days",
+      "notes":         "Reduce dose if gastric discomfort occurs."
+    },
+    {
+      "medicine_name": "Omeprazole",
+      "dosage":        "20mg",
+      "frequency":     "Once daily before breakfast",
+      "duration":      "10 days",
+      "notes":         "Gastroprotection alongside NSAID therapy."
+    }
+  ]
+}
+\end{lstlisting}
+
+\textbf{Success Response --- HTTP 200 OK}
+
+\begin{lstlisting}[style=json]
+{
+  "success": true,
+  "message": "Prescription updated successfully.",
+  "data": {
+    "id":             "1e2f3a4b-5c6d-7e8f-9a0b-1c2d3e4f5a6b",
+    "appointment_id": "9c0d1e2f-3a4b-5c6d-7e8f-9a0b1c2d3e4f",
+    "doctor_id":      "9d2b1f4e-3a7c-4e8d-b1f2-3a7c4e8db1f2",
+    "diagnosis":      "Lumbar disc herniation, L4-L5 with mild nerve compression.",
+    "notes":          "Follow-up in 2 weeks. Rest and avoid lifting.",
+    "items": [
+      {
+        "id":            "4b5c6d7e-8f9a-0b1c-2d3e-4f5a6b7c8d9e",
+        "medicine_name": "Ibuprofen",
+        "dosage":        "600mg",
+        "frequency":     "Twice daily after meals",
+        "duration":      "10 days",
+        "notes":         "Reduce dose if gastric discomfort occurs."
+      },
+      {
+        "id":            "5c6d7e8f-9a0b-1c2d-3e4f-5a6b7c8d9e0f",
+        "medicine_name": "Omeprazole",
+        "dosage":        "20mg",
+        "frequency":     "Once daily before breakfast",
+        "duration":      "10 days",
+        "notes":         "Gastroprotection alongside NSAID therapy."
+      }
+    ]
+  }
+}
+\end{lstlisting}
+
+%% =========================================================================
+\section{Assistant Endpoints}
+\label{sec:ep-assistant}
+%% =========================================================================
+
+All Assistant endpoints are grouped under the
+\route{/api/v1/assistant/} prefix and require both the
+\texttt{role:assistant} middleware and the \texttt{clinic.scope}
+middleware. The authenticated assistant's \texttt{clinic\_id} is
+automatically injected into every request and cannot be overridden by
+the client.
+
+%% ── EP-ASS-1 ──────────────────────────────────────────────────────────────
+\subsection{Query Available Appointment Slots}
+\label{ep:assistant-available-slots}
+
+\begin{table}[h!]
+  \renewcommand{\arraystretch}{1.3}
+  \begin{tabularx}{\linewidth}{@{}L{3cm} X@{}}
+    \toprule
+    \rowcolor{PrimaryBlue}
+    \multicolumn{2}{@{}l}{\tblhdr{GET \quad /api/v1/assistant/available-slots}} \\
+    \midrule
+    Authentication & Bearer token required \\
+    \rowalt
+    Role Required  & \texttt{assistant} \\
+    Clinic Scope   & Enforced \\
+    \rowalt
+    Query Params   & \texttt{doctor\_id} (required, UUID),
+                     \texttt{date} (required, \texttt{YYYY-MM-DD}) \\
+    \rowalt
+    Success Status & \stok{} \\
+    \bottomrule
+  \end{tabularx}
+\end{table}
+
+Computes and returns the list of available appointment start times for a
+specific doctor on a specific date. The algorithm loads the doctor's
+\phpclass{DoctorSchedule} for the corresponding day of the week,
+generates all candidate slots at \texttt{slot\_duration}-minute
+intervals, and subtracts any slots already occupied by
+non-cancelled appointments.
+
+\textbf{Example Request}
+
+\begin{lstlisting}[style=bash]
+GET /api/v1/assistant/available-slots
+    ?doctor_id=9d2b1f4e-3a7c-4e8d-b1f2-3a7c4e8db1f2
+    &date=2026-07-07
+\end{lstlisting}
+
+\textbf{Success Response --- HTTP 200 OK}
+
+\begin{lstlisting}[style=json]
+{
+  "success": true,
+  "message": "Available slots retrieved successfully.",
+  "data": {
+    "doctor_id":     "9d2b1f4e-3a7c-4e8d-b1f2-3a7c4e8db1f2",
+    "date":          "2026-07-07",
+    "slot_duration": 30,
+    "available_slots": [
+      "09:00",
+      "09:30",
+      "10:30",
+      "11:00",
+      "11:30",
+      "12:00",
+      "12:30",
+      "13:00",
+      "13:30"
+    ]
+  }
+}
+\end{lstlisting}
+
+\begin{notebox}[Empty Slots Array]
+  If the doctor has no schedule entry for the given date's day of the
+  week, or if all slots are already booked, the
+  \texttt{available\_slots} array is empty. This is a valid \stok{}
+  response, not an error.
+\end{notebox}
+
+%% ── EP-ASS-2 ──────────────────────────────────────────────────────────────
+\subsection{List Clinic Patients (Assistant View)}
+\label{ep:assistant-patients-index}
+
+\begin{table}[h!]
+  \renewcommand{\arraystretch}{1.3}
+  \begin{tabularx}{\linewidth}{@{}L{3cm} X@{}}
+    \toprule
+    \rowcolor{PrimaryBlue}
+    \multicolumn{2}{@{}l}{\tblhdr{GET \quad /api/v1/assistant/patients}} \\
+    \midrule
+    Authentication & Bearer token required \\
+    \rowalt
+    Role Required  & \texttt{assistant} \\
+    Clinic Scope   & Enforced \\
+    \rowalt
+    Query Params   & \texttt{search} (optional, FULLTEXT on name and phone),
+                     \texttt{page}, \texttt{per\_page} \\
+    \rowalt
+    Success Status & \stok{} \\
+    \bottomrule
+  \end{tabularx}
+\end{table}
+
+Returns all patients belonging to the authenticated assistant's clinic.
+Supports full-text search across \texttt{name} and \texttt{phone}.
+
+\textbf{Success Response --- HTTP 200 OK}
+
+\begin{lstlisting}[style=json]
+{
+  "success": true,
+  "message": "Patients retrieved successfully.",
+  "data": [
+    {
+      "id":            "0d1e2f3a-4b5c-6d7e-8f9a-0b1c2d3e4f5a",
+      "name":          "Karim Naguib",
+      "phone":         "+20-100-111-2222",
+      "email":         "karim.naguib@example.com",
+      "date_of_birth": "1988-03-22",
+      "gender":        "male",
+      "address":       "33 Talaat Harb Street, Cairo",
+      "clinic_id":     "1a2b3c4d-5e6f-7a8b-9c0d-1e2f3a4b5c6d"
+    },
+    {
+      "id":            "1e2f3a4b-5c6d-7e8f-9a0b-1c2d3e4f5a6b",
+      "name":          "Nadia El-Sayed",
+      "phone":         "+20-100-333-4444",
+      "email":         null,
+      "date_of_birth": "1975-11-08",
+      "gender":        "female",
+      "address":       "17 Sudan Street, Cairo",
+      "clinic_id":     "1a2b3c4d-5e6f-7a8b-9c0d-1e2f3a4b5c6d"
+    }
+  ]
+}
+\end{lstlisting}
+
+%% ── EP-ASS-3 ──────────────────────────────────────────────────────────────
+\subsection{Register New Patient}
+\label{ep:assistant-patients-store}
+
+\begin{table}[h!]
+  \renewcommand{\arraystretch}{1.3}
+  \begin{tabularx}{\linewidth}{@{}L{3cm} X@{}}
+    \toprule
+    \rowcolor{PrimaryBlue}
+    \multicolumn{2}{@{}l}{\tblhdr{POST \quad /api/v1/assistant/patients}} \\
+    \midrule
+    Authentication & Bearer token required \\
+    \rowalt
+    Role Required  & \texttt{assistant} \\
+    Clinic Scope   & Enforced --- \texttt{clinic\_id} injected by middleware \\
+    \rowalt
+    Success Status & \stcreated{} \\
+    \bottomrule
+  \end{tabularx}
+\end{table}
+
+Creates a new patient record within the authenticated assistant's
+clinic. The \texttt{phone} field must be unique within the clinic to
+prevent duplicate registrations.
+
+\textbf{Request Body}
+
+\begin{lstlisting}[style=json]
+{
+  "name":          "Youssef Mansour",
+  "phone":         "+20-111-555-6666",
+  "email":         "youssef.m@example.com",
+  "date_of_birth": "1995-07-14",
+  "gender":        "male",
+  "address":       "5 Ahmed Orabi Street, Giza"
+}
+\end{lstlisting}
+
+\textbf{Validation Rules}
+
+\begin{table}[h!]
+  \renewcommand{\arraystretch}{1.3}
+  \begin{tabularx}{\linewidth}{@{}L{3.5cm} L{4cm} X@{}}
+    \toprule
+    \rowcolor{PrimaryBlue}
+    \tblhdr{Field} & \tblhdr{Rules} & \tblhdr{Notes} \\
+    \midrule
+    \texttt{name}          & required, string             & Full legal name. \\
+    \rowalt
+    \texttt{phone}         & required, string,
+                             unique:patients,phone,NULL,id,clinic\_id
+                             & Unique within the clinic. \\
+    \texttt{email}         & nullable, email              & Optional. \\
+    \rowalt
+    \texttt{date\_of\_birth} & required, date, before:today & ISO 8601 date. \\
+    \texttt{gender}        & required, in:male,female     & Backed enum value. \\
+    \rowalt
+    \texttt{address}       & nullable, string             & Free-text address. \\
+    \bottomrule
+  \end{tabularx}
+\end{table}
+
+\textbf{Success Response --- HTTP 201 Created}
+
+\begin{lstlisting}[style=json]
+{
+  "success": true,
+  "message": "Patient registered successfully.",
+  "data": {
+    "id":            "6d7e8f9a-0b1c-2d3e-4f5a-6b7c8d9e0f1a",
+    "name":          "Youssef Mansour",
+    "phone":         "+20-111-555-6666",
+    "email":         "youssef.m@example.com",
+    "date_of_birth": "1995-07-14",
+    "gender":        "male",
+    "address":       "5 Ahmed Orabi Street, Giza",
+    "clinic_id":     "1a2b3c4d-5e6f-7a8b-9c0d-1e2f3a4b5c6d",
+    "created_at":    "2026-06-14T14:00:00.000000Z"
+  }
+}
+\end{lstlisting}
+
+%% ── EP-ASS-4 ──────────────────────────────────────────────────────────────
+\subsection{Retrieve Patient (Assistant View)}
+\label{ep:assistant-patients-show}
+
+\begin{table}[h!]
+  \renewcommand{\arraystretch}{1.3}
+  \begin{tabularx}{\linewidth}{@{}L{3cm} X@{}}
+    \toprule
+    \rowcolor{PrimaryBlue}
+    \multicolumn{2}{@{}l}{\tblhdr{GET \quad /api/v1/assistant/patients/\{id\}}} \\
+    \midrule
+    Authentication & Bearer token required \\
+    \rowalt
+    Role Required  & \texttt{assistant} \\
+    Path Param     & \texttt{id} --- UUID of the patient \\
+    \rowalt
+    Clinic Scope   & Enforced --- cross-clinic access raises \stforbid{} \\
+    \rowalt
+    Success Status & \stok{} \\
+    \bottomrule
+  \end{tabularx}
+\end{table}
+
+\textbf{Success Response --- HTTP 200 OK}
+
+\begin{lstlisting}[style=json]
+{
+  "success": true,
+  "message": "Patient retrieved successfully.",
+  "data": {
+    "id":            "6d7e8f9a-0b1c-2d3e-4f5a-6b7c8d9e0f1a",
+    "name":          "Youssef Mansour",
+    "phone":         "+20-111-555-6666",
+    "email":         "youssef.m@example.com",
+    "date_of_birth": "1995-07-14",
+    "gender":        "male",
+    "address":       "5 Ahmed Orabi Street, Giza",
+    "clinic_id":     "1a2b3c4d-5e6f-7a8b-9c0d-1e2f3a4b5c6d"
+  }
+}
+\end{lstlisting}
+
+%% ── EP-ASS-5 ──────────────────────────────────────────────────────────────
+\subsection{Update Patient}
+\label{ep:assistant-patients-update}
+
+\begin{table}[h!]
+  \renewcommand{\arraystretch}{1.3}
+  \begin{tabularx}{\linewidth}{@{}L{3cm} X@{}}
+    \toprule
+    \rowcolor{PrimaryBlue}
+    \multicolumn{2}{@{}l}{\tblhdr{PUT \quad /api/v1/assistant/patients/\{id\}}} \\
+    \midrule
+    Authentication & Bearer token required \\
+    \rowalt
+    Role Required  & \texttt{assistant} \\
+    Path Param     & \texttt{id} --- UUID of the patient \\
+    \rowalt
+    Clinic Scope   & Enforced \\
+    \rowalt
+    Success Status & \stok{} \\
+    \bottomrule
+  \end{tabularx}
+\end{table}
+
+Updates all mutable fields on the patient record. The phone uniqueness
+constraint ignores the current patient record.
+
+\textbf{Request Body}
+
+\begin{lstlisting}[style=json]
+{
+  "name":          "Youssef A. Mansour",
+  "phone":         "+20-111-555-6666",
+  "email":         "y.mansour@example.com",
+  "date_of_birth": "1995-07-14",
+  "gender":        "male",
+  "address":       "5 Ahmed Orabi Street, Apt. 3, Giza"
+}
+\end{lstlisting}
+
+\textbf{Success Response --- HTTP 200 OK}
+
+\begin{lstlisting}[style=json]
+{
+  "success": true,
+  "message": "Patient updated successfully.",
+  "data": {
+    "id":            "6d7e8f9a-0b1c-2d3e-4f5a-6b7c8d9e0f1a",
+    "name":          "Youssef A. Mansour",
+    "phone":         "+20-111-555-6666",
+    "email":         "y.mansour@example.com",
+    "date_of_birth": "1995-07-14",
+    "gender":        "male",
+    "address":       "5 Ahmed Orabi Street, Apt. 3, Giza",
+    "clinic_id":     "1a2b3c4d-5e6f-7a8b-9c0d-1e2f3a4b5c6d"
+  }
+}
+\end{lstlisting}
+
+%% ── EP-ASS-6 ──────────────────────────────────────────────────────────────
+\subsection{List Clinic Appointments (Assistant View)}
+\label{ep:assistant-appointments-index}
+
+\begin{table}[h!]
+  \renewcommand{\arraystretch}{1.3}
+  \begin{tabularx}{\linewidth}{@{}L{3cm} X@{}}
+    \toprule
+    \rowcolor{PrimaryBlue}
+    \multicolumn{2}{@{}l}{\tblhdr{GET \quad /api/v1/assistant/appointments}} \\
+    \midrule
+    Authentication & Bearer token required \\
+    \rowalt
+    Role Required  & \texttt{assistant} \\
+    Clinic Scope   & Enforced --- all appointments within the clinic \\
+    \rowalt
+    Query Params   & \texttt{doctor\_id} (optional UUID filter),
+                     \texttt{patient\_id} (optional UUID filter),
+                     \texttt{date} (optional \texttt{YYYY-MM-DD}),
+                     \texttt{status} (optional) \\
+    \rowalt
+    Success Status & \stok{} \\
+    \bottomrule
+  \end{tabularx}
+\end{table}
+
+Unlike the Doctor view (which is restricted to the authenticated
+doctor's own appointments), the Assistant view returns all appointments
+within the clinic, across all doctors, enabling clinic-wide scheduling
+management.
+
+\textbf{Success Response --- HTTP 200 OK}
+
+\begin{lstlisting}[style=json]
+{
+  "success": true,
+  "message": "Appointments retrieved successfully.",
+  "data": [
+    {
+      "id":               "9c0d1e2f-3a4b-5c6d-7e8f-9a0b1c2d3e4f",
+      "doctor_id":        "9d2b1f4e-3a7c-4e8d-b1f2-3a7c4e8db1f2",
+      "patient_id":       "0d1e2f3a-4b5c-6d7e-8f9a-0b1c2d3e4f5a",
+      "clinic_id":        "1a2b3c4d-5e6f-7a8b-9c0d-1e2f3a4b5c6d",
+      "booked_by":        "4d5e6f7a-8b9c-0d1e-2f3a-4b5c6d7e8f9a",
+      "appointment_date": "2026-07-01",
+      "start_time":       "09:00",
+      "end_time":         "09:30",
+      "status":           "completed",
+      "notes":            "Patient reports recurring lower-back pain.",
+      "doctor": {
+        "id":   "9d2b1f4e-3a7c-4e8d-b1f2-3a7c4e8db1f2",
+        "name": "Dr. Sarah Khalil"
+      },
+      "patient": {
+        "id":   "0d1e2f3a-4b5c-6d7e-8f9a-0b1c2d3e4f5a",
+        "name": "Karim Naguib"
+      }
+    }
+  ]
+}
+\end{lstlisting}
+
+%% ── EP-ASS-7 ──────────────────────────────────────────────────────────────
+\subsection{Retrieve Appointment (Assistant View)}
+\label{ep:assistant-appointments-show}
+
+\begin{table}[h!]
+  \renewcommand{\arraystretch}{1.3}
+  \begin{tabularx}{\linewidth}{@{}L{3cm} X@{}}
+    \toprule
+    \rowcolor{PrimaryBlue}
+    \multicolumn{2}{@{}l}{\tblhdr{GET \quad /api/v1/assistant/appointments/\{id\}}} \\
+    \midrule
+    Authentication & Bearer token required \\
+    \rowalt
+    Role Required  & \texttt{assistant} \\
+    Path Param     & \texttt{id} --- UUID of the appointment \\
+    \rowalt
+    Clinic Scope   & Enforced \\
+    \rowalt
+    Success Status & \stok{} \\
+    \bottomrule
+  \end{tabularx}
+\end{table}
+
+\textbf{Success Response --- HTTP 200 OK}
+
+\begin{lstlisting}[style=json]
+{
+  "success": true,
+  "message": "Appointment retrieved successfully.",
+  "data": {
+    "id":               "9c0d1e2f-3a4b-5c6d-7e8f-9a0b1c2d3e4f",
+    "doctor_id":        "9d2b1f4e-3a7c-4e8d-b1f2-3a7c4e8db1f2",
+    "patient_id":       "0d1e2f3a-4b5c-6d7e-8f9a-0b1c2d3e4f5a",
+    "clinic_id":        "1a2b3c4d-5e6f-7a8b-9c0d-1e2f3a4b5c6d",
+    "booked_by":        "4d5e6f7a-8b9c-0d1e-2f3a-4b5c6d7e8f9a",
+    "appointment_date": "2026-07-01",
+    "start_time":       "09:00",
+    "end_time":         "09:30",
+    "status":           "completed",
+    "notes":            "Patient reports recurring lower-back pain.",
+    "doctor": {
+      "id":   "9d2b1f4e-3a7c-4e8d-b1f2-3a7c4e8db1f2",
+      "name": "Dr. Sarah Khalil"
+    },
+    "patient": {
+      "id":    "0d1e2f3a-4b5c-6d7e-8f9a-0b1c2d3e4f5a",
+      "name":  "Karim Naguib",
+      "phone": "+20-100-111-2222"
+    }
+  }
+}
+\end{lstlisting}
+
+%% ── EP-ASS-8 ──────────────────────────────────────────────────────────────
+\subsection{Book Appointment}
+\label{ep:assistant-appointments-store}
+
+\begin{table}[h!]
+  \renewcommand{\arraystretch}{1.3}
+  \begin{tabularx}{\linewidth}{@{}L{3cm} X@{}}
+    \toprule
+    \rowcolor{PrimaryBlue}
+    \multicolumn{2}{@{}l}{\tblhdr{POST \quad /api/v1/assistant/appointments}} \\
+    \midrule
+    Authentication & Bearer token required \\
+    \rowalt
+    Role Required  & \texttt{assistant} \\
+    Clinic Scope   & Enforced \\
+    \rowalt
+    Restrictions   & The requested slot must be available (within the
+                     doctor's schedule and not already booked). A
+                     distributed cache lock prevents concurrent
+                     double-booking. \\
+    \rowalt
+    Success Status & \stcreated{} \\
+    \bottomrule
+  \end{tabularx}
+\end{table}
+
+Books an appointment by linking a patient to a doctor's available slot.
+The system:
+\begin{enumerate}
+  \item Acquires a distributed \texttt{Cache::lock} keyed to
+    \texttt{appointment\_slot:\{doctor\_id\}:\{date\}:\{start\_time\}}.
+  \item Validates that the requested \texttt{start\_time} appears in
+    the computed available slots for that doctor and date.
+  \item Computes \texttt{end\_time} as
+    \texttt{start\_time + slot\_duration}.
+  \item Persists the appointment record with status \texttt{pending}.
+  \item Dispatches the \texttt{SendAppointmentConfirmation} job
+    asynchronously.
+  \item Releases the lock.
+\end{enumerate}
+
+\textbf{Request Body}
+
+\begin{lstlisting}[style=json]
+{
+  "doctor_id":        "9d2b1f4e-3a7c-4e8d-b1f2-3a7c4e8db1f2",
+  "patient_id":       "6d7e8f9a-0b1c-2d3e-4f5a-6b7c8d9e0f1a",
+  "appointment_date": "2026-07-07",
+  "start_time":       "10:00",
+  "notes":            "First visit. Patient complains of knee pain."
+}
+\end{lstlisting}
+
+\textbf{Validation Rules}
+
+\begin{table}[h!]
+  \renewcommand{\arraystretch}{1.3}
+  \begin{tabularx}{\linewidth}{@{}L{4cm} L{3.5cm} X@{}}
+    \toprule
+    \rowcolor{PrimaryBlue}
+    \tblhdr{Field} & \tblhdr{Rules} & \tblhdr{Notes} \\
+    \midrule
+    \texttt{doctor\_id}        & required, uuid, exists:users,id
+                                 & Must be a Doctor-role user in the same clinic. \\
+    \rowalt
+    \texttt{patient\_id}       & required, uuid, exists:patients,id
+                                 & Must belong to the same clinic. \\
+    \texttt{appointment\_date} & required, date, after\_or\_equal:today
+                                 & Cannot book in the past. \\
+    \rowalt
+    \texttt{start\_time}       & required, date\_format:H:i
+                                 & Must match an available slot. \\
+    \texttt{notes}             & nullable, string            & Optional booking notes. \\
+    \bottomrule
+  \end{tabularx}
+\end{table}
+
+\textbf{Success Response --- HTTP 201 Created}
+
+\begin{lstlisting}[style=json]
+{
+  "success": true,
+  "message": "Appointment booked successfully.",
+  "data": {
+    "id":               "7e8f9a0b-1c2d-3e4f-5a6b-7c8d9e0f1a2b",
+    "doctor_id":        "9d2b1f4e-3a7c-4e8d-b1f2-3a7c4e8db1f2",
+    "patient_id":       "6d7e8f9a-0b1c-2d3e-4f5a-6b7c8d9e0f1a",
+    "clinic_id":        "1a2b3c4d-5e6f-7a8b-9c0d-1e2f3a4b5c6d",
+    "booked_by":        "4d5e6f7a-8b9c-0d1e-2f3a-4b5c6d7e8f9a",
+    "appointment_date": "2026-07-07",
+    "start_time":       "10:00",
+    "end_time":         "10:30",
+    "status":           "pending",
+    "notes":            "First visit. Patient complains of knee pain.",
+    "doctor": {
+      "id":   "9d2b1f4e-3a7c-4e8d-b1f2-3a7c4e8db1f2",
+      "name": "Dr. Sarah Khalil"
+    },
+    "patient": {
+      "id":   "6d7e8f9a-0b1c-2d3e-4f5a-6b7c8d9e0f1a",
+      "name": "Youssef A. Mansour"
+    }
+  }
+}
+\end{lstlisting}
+
+\textbf{Error Response --- HTTP 409 (slot already booked)}
+
+\begin{lstlisting}[style=json]
+{
+  "success": false,
+  "message": "The requested appointment slot is not available."
+}
+\end{lstlisting}
+
+\textbf{Error Response --- HTTP 422 (slot outside doctor schedule)}
+
+\begin{lstlisting}[style=json]
+{
+  "success": false,
+  "message": "The selected time slot is not within the doctor's schedule for this day."
+}
+\end{lstlisting}
+
+%% ── EP-ASS-9 ──────────────────────────────────────────────────────────────
+\subsection{Reschedule Appointment}
+\label{ep:assistant-appointments-update}
+
+\begin{table}[h!]
+  \renewcommand{\arraystretch}{1.3}
+  \begin{tabularx}{\linewidth}{@{}L{3cm} X@{}}
+    \toprule
+    \rowcolor{PrimaryBlue}
+    \multicolumn{2}{@{}l}{\tblhdr{PUT \quad /api/v1/assistant/appointments/\{id\}}} \\
+    \midrule
+    Authentication & Bearer token required \\
+    \rowalt
+    Role Required  & \texttt{assistant} \\
+    Path Param     & \texttt{id} --- UUID of the appointment \\
+    \rowalt
+    Clinic Scope   & Enforced \\
+    Restrictions   & Only \texttt{pending} or \texttt{confirmed}
+                     appointments may be rescheduled. A
+                     \texttt{completed} or \texttt{cancelled}
+                     appointment raises \phpclass{InvalidAppointmentStateException}
+                     (\stunproc{}). \\
+    \rowalt
+    Success Status & \stok{} \\
+    \bottomrule
+  \end{tabularx}
+\end{table}
+
+Moves the appointment to a new date and/or time. The same slot
+availability validation and distributed cache lock logic used in the
+booking endpoint applies here. The appointment's \texttt{doctor\_id}
+and \texttt{patient\_id} cannot be changed via this endpoint.
+
+\textbf{Request Body}
+
+\begin{lstlisting}[style=json]
+{
+  "appointment_date": "2026-07-09",
+  "start_time":       "11:00",
+  "notes":            "Rescheduled per patient request."
+}
+\end{lstlisting}
+
+\textbf{Validation Rules}
+
+\begin{table}[h!]
+  \renewcommand{\arraystretch}{1.3}
+  \begin{tabularx}{\linewidth}{@{}L{4cm} L{3.5cm} X@{}}
+    \toprule
+    \rowcolor{PrimaryBlue}
+    \tblhdr{Field} & \tblhdr{Rules} & \tblhdr{Notes} \\
+    \midrule
+    \texttt{appointment\_date} & required, date, after\_or\_equal:today
+                                 & New appointment date. \\
+    \rowalt
+    \texttt{start\_time}       & required, date\_format:H:i
+                                 & Must be available on the new date. \\
+    \texttt{notes}             & nullable, string
+                                 & Optional update to booking notes. \\
+    \bottomrule
+  \end{tabularx}
+\end{table}
+
+\textbf{Success Response --- HTTP 200 OK}
+
+\begin{lstlisting}[style=json]
+{
+  "success": true,
+  "message": "Appointment rescheduled successfully.",
+  "data": {
+    "id":               "7e8f9a0b-1c2d-3e4f-5a6b-7c8d9e0f1a2b",
+    "doctor_id":        "9d2b1f4e-3a7c-4e8d-b1f2-3a7c4e8db1f2",
+    "patient_id":       "6d7e8f9a-0b1c-2d3e-4f5a-6b7c8d9e0f1a",
+    "clinic_id":        "1a2b3c4d-5e6f-7a8b-9c0d-1e2f3a4b5c6d",
+    "booked_by":        "4d5e6f7a-8b9c-0d1e-2f3a-4b5c6d7e8f9a",
+    "appointment_date": "2026-07-09",
+    "start_time":       "11:00",
+    "end_time":         "11:30",
+    "status":           "pending",
+    "notes":            "Rescheduled per patient request.",
+    "doctor": {
+      "id":   "9d2b1f4e-3a7c-4e8d-b1f2-3a7c4e8db1f2",
+      "name": "Dr. Sarah Khalil"
+    },
+    "patient": {
+      "id":   "6d7e8f9a-0b1c-2d3e-4f5a-6b7c8d9e0f1a",
+      "name": "Youssef A. Mansour"
+    }
+  }
+}
+\end{lstlisting}
+
+\textbf{Error Response --- HTTP 422 (attempt to reschedule completed appointment)}
+
+\begin{lstlisting}[style=json]
+{
+  "success": false,
+  "message": "A completed appointment cannot be rescheduled."
+}
+\end{lstlisting}
+
+%% ── EP-ASS-10 ─────────────────────────────────────────────────────────────
+\subsection{Cancel Appointment}
+\label{ep:assistant-appointments-destroy}
+
+\begin{table}[h!]
+  \renewcommand{\arraystretch}{1.3}
+  \begin{tabularx}{\linewidth}{@{}L{3cm} X@{}}
+    \toprule
+    \rowcolor{PrimaryBlue}
+    \multicolumn{2}{@{}l}{\tblhdr{DELETE \quad /api/v1/assistant/appointments/\{id\}}} \\
+    \midrule
+    Authentication & Bearer token required \\
+    \rowalt
+    Role Required  & \texttt{assistant} \\
+    Path Param     & \texttt{id} --- UUID of the appointment \\
+    \rowalt
+    Clinic Scope   & Enforced \\
+    Restrictions   & Only \texttt{pending} or \texttt{confirmed}
+                     appointments may be cancelled. \\
+    \rowalt
+    Success Status & \stok{} \\
+    \bottomrule
+  \end{tabularx}
+\end{table}
+
+Cancels the appointment by setting its status to \texttt{cancelled}.
+The record is \textbf{not} deleted from the database; it is retained for
+historical integrity and audit purposes. The released time slot is
+immediately available for rebooking.
+
+\textbf{Request Body} --- None.
+
+\textbf{Success Response --- HTTP 200 OK}
+
+\begin{lstlisting}[style=json]
+{
+  "success": true,
+  "message": "Appointment cancelled successfully.",
+  "data": {
+    "id":               "7e8f9a0b-1c2d-3e4f-5a6b-7c8d9e0f1a2b",
+    "doctor_id":        "9d2b1f4e-3a7c-4e8d-b1f2-3a7c4e8db1f2",
+    "patient_id":       "6d7e8f9a-0b1c-2d3e-4f5a-6b7c8d9e0f1a",
+    "clinic_id":        "1a2b3c4d-5e6f-7a8b-9c0d-1e2f3a4b5c6d",
+    "appointment_date": "2026-07-09",
+    "start_time":       "11:00",
+    "end_time":         "11:30",
+    "status":           "cancelled"
+  }
+}
+\end{lstlisting}
+
+%% =========================================================================
+\section{Common Error Response Reference}
+\label{sec:common-errors}
+%% =========================================================================
+
+The following error shapes are returned consistently across all endpoints.
+
+\begin{table}[h!]
+  \centering
+  \caption{Common HTTP error responses and their trigger conditions.}
+  \label{tab:common-errors}
+  \renewcommand{\arraystretch}{1.5}
+  \begin{tabularx}{\linewidth}{@{}C{2.5cm} X@{}}
+    \toprule
+    \rowcolor{PrimaryBlue}
+    \tblhdr{Status} & \tblhdr{Trigger and Shape} \\
+    \midrule
+    \stunauth{}
+      & Missing, malformed, or revoked bearer token. The
+        \texttt{auth:api} Passport middleware terminates the request.
+        \newline
+        \texttt{\{"success": false, "message": "Unauthenticated."\}} \\
+    \rowalt
+    \stforbid{}
+      & Role mismatch (\phpclass{RoleMiddleware}); cross-clinic access
+        (\phpclass{ClinicScopeViolationException}); self-demotion
+        attempt (\phpclass{SelfDemotionException}); deactivated account
+        (\phpclass{AccountDeactivatedException}).
+        \newline
+        \texttt{\{"success": false, "message": "<context-specific message>"\}} \\
+    \stnotfound{}
+      & Route model binding failed to resolve the UUID path parameter
+        to an existing record (\texttt{ModelNotFoundException}).
+        \newline
+        \texttt{\{"success": false, "message": "Resource not found."\}} \\
+    \rowalt
+    \stconflict{}
+      & A booking or reschedule request targets a slot that is already
+        occupied (\phpclass{AppointmentConflictException}).
+        \newline
+        \texttt{\{"success": false, "message": "The requested appointment slot is not available."\}} \\
+    \stunproc{}
+      & Form request validation failure (structured field errors under
+        \texttt{"errors"} key); or an operation on a resource in an
+        incompatible state
+        (\phpclass{InvalidAppointmentStateException}).
+        \newline
+        \texttt{\{"success": false, "errors": \{"field": ["message"]\}\}} \\
+    \bottomrule
+  \end{tabularx}
+\end{table}
+
+\begin{lstlisting}[style=json, caption={HTTP 422 validation failure envelope.}]
+{
+  "success": false,
+  "errors": {
+    "email":    ["The email field is required."],
+    "password": ["The password must be at least 8 characters."]
+  }
+}
+\end{lstlisting}
+
+\begin{lstlisting}[style=json, caption={HTTP 404 resource not found envelope.}]
+{
+  "success": false,
+  "message": "Resource not found."
+}
+\end{lstlisting}

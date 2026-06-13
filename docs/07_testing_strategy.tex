@@ -1,0 +1,1179 @@
+%% ============================================================
+%%  Chapter 7 — Testing Strategy and Configuration
+%%  07_testing_strategy.tex
+%% ============================================================
+\chapter{Testing Strategy and Configuration}
+\label{chap:testing}
+
+\chapterintro{%
+  This chapter documents the testing philosophy, infrastructure, and
+  configuration of the Clinic Management API test suite. It covers the
+  distinction between unit and feature tests in the context of this
+  project, explains why a dedicated MySQL test database is used instead
+  of an in-memory SQLite substitute, documents the \texttt{phpunit.xml}
+  configuration file, describes the \texttt{RefreshDatabase} trait and
+  the Passport \texttt{actingAs()} authentication helper, and provides
+  the full source for the base \texttt{TestCase} class and the model
+  factories that underpin every test.
+}
+
+%% ─────────────────────────────────────────────────────────────────────────
+\section{Testing Philosophy}
+\label{sec:testing-philosophy}
+%% ─────────────────────────────────────────────────────────────────────────
+
+The test suite for the Clinic Management API is built around a single
+guiding principle: \textbf{tests must exercise the same code path that
+production requests follow}. This principle has one significant
+architectural consequence that distinguishes this project from many
+Laravel applications: the tests run against a real MySQL database, not
+an in-memory SQLite substitute.
+
+This choice is deliberate and non-negotiable for three reasons.
+
+\begin{enumerate}
+  \item \textbf{FULLTEXT search.} The patient search endpoint uses
+    MySQL's \texttt{MATCH ... AGAINST} full-text search syntax via
+    Eloquent's \texttt{whereFullText()} method. SQLite does not support
+    this syntax. A test that substitutes SQLite would be forced to
+    mock the search query entirely, testing nothing of substance.
+
+  \item \textbf{TIME column formatting.} MySQL returns \texttt{TIME}
+    column values over the wire as \texttt{HH:MM:SS} strings. The
+    application contains explicit normalisation logic
+    (\texttt{substr(\$t, 0, 5)}) that converts this to \texttt{HH:MM}
+    before slot comparison. SQLite represents time values differently;
+    a test database that does not reproduce MySQL's wire format cannot
+    catch regressions in this normalisation.
+
+  \item \textbf{Unique composite indexes.} The double-booking prevention
+    backstop relies on a MySQL unique composite index on
+    \texttt{(doctor\_id, appointment\_date, start\_time)}. SQLite
+    handles unique constraint violations through a different code path
+    and with different exception types, which would make the test for
+    the database-level backstop unreliable.
+\end{enumerate}
+
+The test suite therefore mandates a dedicated MySQL database named
+\texttt{clinic\_management\_test}, configured separately from the
+production database. This database is created once and its schema is
+refreshed per-test via the \texttt{RefreshDatabase} trait, which wraps
+each test in a database transaction that is rolled back after the test
+completes.
+
+%% ─────────────────────────────────────────────────────────────────────────
+\section{Unit Tests vs.\ Feature Tests}
+\label{sec:unit-vs-feature}
+%% ─────────────────────────────────────────────────────────────────────────
+
+PHPUnit categorises tests into test suites, and Laravel conventionally
+maps these to two directories: \texttt{tests/Unit/} and
+\texttt{tests/Feature/}. The distinction is meaningful in this project.
+
+\subsection{Unit Tests}
+
+A unit test exercises a single class or function in complete isolation.
+All dependencies are replaced with mocks or stubs. Unit tests do not
+touch the database, the HTTP stack, or the filesystem.
+
+In the Clinic Management API, unit tests are appropriate for:
+
+\begin{itemize}
+  \item \textbf{Enum behaviour.} Testing that
+    \texttt{AppointmentStatus::PENDING->canTransitionTo(AppointmentStatus::CONFIRMED)}
+    returns \texttt{true} and that
+    \texttt{AppointmentStatus::COMPLETED->canTransitionTo(AppointmentStatus::PENDING)}
+    returns \texttt{false}.
+  \item \textbf{Slot generation algorithm.} Testing the pure arithmetic
+    logic of the slot generator given a fixed start time, end time, and
+    slot duration, without any database involvement.
+  \item \textbf{Exception message formatting.} Testing that
+    \phpclass{DuplicateScheduleException} constructs the correct message
+    string for each day-of-week integer.
+\end{itemize}
+
+\subsection{Feature Tests}
+
+A feature test exercises the complete HTTP request-to-response pipeline:
+routing, middleware, form request validation, controllers, services,
+repositories, Eloquent models, and the database. Every test in the
+primary test suite is a feature test.
+
+Feature tests are written using Laravel's \texttt{TestCase} (which
+extends PHPUnit's \texttt{TestCase}) and use the HTTP testing helpers
+(\texttt{getJson()}, \texttt{postJson()}, etc.) to simulate real HTTP
+requests. The response object is then asserted against for status code,
+JSON structure, and specific field values.
+
+\begin{table}[h!]
+  \centering
+  \caption{Comparison of unit and feature test characteristics.}
+  \label{tab:unit-vs-feature}
+  \renewcommand{\arraystretch}{1.5}
+  \begin{tabularx}{\linewidth}{@{}L{3.5cm} X X@{}}
+    \toprule
+    \rowcolor{PrimaryBlue}
+    \tblhdr{Characteristic} & \tblhdr{Unit Test} & \tblhdr{Feature Test} \\
+    \midrule
+    Scope
+      & Single class or method
+      & Full HTTP stack \\
+    \rowalt
+    Database
+      & None (mocked or stubbed)
+      & Real MySQL test database \\
+    Dependencies
+      & Mocked via PHPUnit mocks
+      & Real instances via Laravel DI container \\
+    \rowalt
+    Speed
+      & Very fast (milliseconds)
+      & Slower (tens of milliseconds per test) \\
+    Confidence
+      & Low (integration gaps uncovered)
+      & High (exercises production code path) \\
+    \rowalt
+    Primary use in this project
+      & Enum logic, pure algorithms
+      & All business scenarios \\
+    \bottomrule
+  \end{tabularx}
+\end{table}
+
+\begin{notebox}[This Project's Emphasis]
+  The overwhelming majority of the \testcount{} tests in this suite are
+  feature tests. The decision to invest in feature tests over unit tests
+  reflects the architecture of the application: the business logic lives
+  in service classes that are deeply integrated with Eloquent and the
+  database. Mocking Eloquent to unit-test a service class produces tests
+  that verify the mock, not the service.
+\end{notebox}
+
+%% ─────────────────────────────────────────────────────────────────────────
+\section{PHPUnit Configuration}
+\label{sec:phpunit-config}
+%% ─────────────────────────────────────────────────────────────────────────
+
+\subsection{The phpunit.xml File}
+
+PHPUnit reads its configuration from \texttt{phpunit.xml} in the
+project root. The configuration defines the test suites, the code
+coverage settings, and the environment variables that override
+\texttt{.env} values during the test run.
+
+\begin{lstlisting}[style=xml, caption={\texttt{phpunit.xml} --- complete
+  PHPUnit 11 configuration for the Clinic Management API.}]
+<?xml version="1.0" encoding="UTF-8"?>
+<phpunit xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:noNamespaceSchemaLocation="vendor/phpunit/phpunit/phpunit.xsd"
+         bootstrap="vendor/autoload.php"
+         colors="true"
+         stopOnFailure="false"
+         processIsolation="false"
+         backupGlobals="false"
+>
+  <!--
+    ┌─────────────────────────────────────────────────────────────────┐
+    │  Test Suites                                                    │
+    └─────────────────────────────────────────────────────────────────┘
+  -->
+  <testsuites>
+    <testsuite name="Unit">
+      <directory>tests/Unit</directory>
+    </testsuite>
+    <testsuite name="Feature">
+      <directory>tests/Feature</directory>
+    </testsuite>
+  </testsuites>
+
+  <!--
+    ┌─────────────────────────────────────────────────────────────────┐
+    │  Code Coverage Source                                           │
+    └─────────────────────────────────────────────────────────────────┘
+    Restrict coverage collection to application source only.
+    Vendor code and bootstrap files are excluded.
+  -->
+  <source>
+    <include>
+      <directory>app</directory>
+    </include>
+    <exclude>
+      <directory>app/Console</directory>
+    </exclude>
+  </source>
+
+  <!--
+    ┌─────────────────────────────────────────────────────────────────┐
+    │  Environment Variables                                          │
+    └─────────────────────────────────────────────────────────────────┘
+    These values override the .env file for the duration of the test
+    run. They point all database activity at the dedicated test
+    database and disable external side-effects.
+  -->
+  <php>
+    <!-- Application environment -->
+    <env name="APP_ENV"   value="testing"/>
+    <env name="APP_DEBUG" value="true"/>
+
+    <!--
+      Database — dedicated MySQL test schema.
+      SQLite :memory: is NOT used because the application depends on
+      MySQL-specific features: FULLTEXT indexes (patient search),
+      TIME column wire format (slot normalisation), and composite
+      unique constraints (double-booking backstop).
+    -->
+    <env name="DB_CONNECTION" value="mysql"/>
+    <env name="DB_HOST"       value="127.0.0.1"/>
+    <env name="DB_PORT"       value="3306"/>
+    <env name="DB_DATABASE"   value="clinic_management_test"/>
+    <env name="DB_USERNAME"   value="root"/>
+    <env name="DB_PASSWORD"   value=""/>
+
+    <!-- Cache — array driver so no Redis is required in CI -->
+    <env name="CACHE_DRIVER"   value="array"/>
+
+    <!-- Queue — sync driver prevents async jobs from running
+         asynchronously during tests, ensuring jobs complete
+         before assertions are evaluated -->
+    <env name="QUEUE_CONNECTION" value="sync"/>
+
+    <!-- Session — array driver (no cookie handling needed) -->
+    <env name="SESSION_DRIVER" value="array"/>
+
+    <!-- Mail — log driver captures outgoing mail without
+         sending, preventing test emails reaching real inboxes -->
+    <env name="MAIL_MAILER" value="log"/>
+
+    <!-- Passport — use a pre-generated testing key pair so that
+         passport:install does not need to run in CI -->
+    <env name="PASSPORT_PERSONAL_ACCESS_CLIENT_ID"     value="1"/>
+    <env name="PASSPORT_PERSONAL_ACCESS_CLIENT_SECRET" value="testing-secret"/>
+  </php>
+
+</phpunit>
+\end{lstlisting}
+
+\subsection{Why Not SQLite In-Memory?}
+
+Many Laravel tutorials recommend the \texttt{DB\_CONNECTION=sqlite} and
+\texttt{DB\_DATABASE=:memory:} combination for test isolation. This
+approach offers genuine speed advantages --- SQLite does not require a
+running database server and its in-memory mode creates and destroys the
+schema instantaneously. However, it is incompatible with this application
+for the reasons enumerated in Section~\ref{sec:testing-philosophy}.
+
+\begin{warningbox}[Do Not Substitute SQLite]
+  If \texttt{DB\_CONNECTION} is changed to \texttt{sqlite} and
+  \texttt{DB\_DATABASE} is changed to \texttt{:memory:} in
+  \texttt{phpunit.xml}, the following categories of tests will fail or
+  produce false positives:
+  \begin{itemize}
+    \item Patient full-text search tests --- SQLite has no
+      \texttt{MATCH ... AGAINST} syntax.
+    \item Slot availability tests --- SQLite's time representation
+      differs from MySQL's \texttt{HH:MM:SS} wire format.
+    \item Double-booking database backstop tests --- SQLite raises a
+      different PDO exception for unique constraint violations.
+  \end{itemize}
+\end{warningbox}
+
+\subsection{Creating the Test Database}
+
+The test database must be created manually before the first test run.
+It is never created automatically by the test suite.
+
+\begin{lstlisting}[style=bash, caption={One-time setup: create the
+  dedicated MySQL test database.}]
+# Connect to MySQL and create the schema
+mysql -u root -p -e "CREATE DATABASE IF NOT EXISTS clinic_management_test \
+  CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;"
+
+# Run all migrations against the test database
+php artisan migrate --env=testing
+
+# (Optional) Confirm the schema is present
+php artisan migrate:status --env=testing
+\end{lstlisting}
+
+Because the \texttt{RefreshDatabase} trait wraps each individual test
+in a transaction that is rolled back at the end, the schema itself
+persists across the entire test run. The \texttt{migrate} command above
+only needs to be run once (or after a new migration is added).
+
+%% ─────────────────────────────────────────────────────────────────────────
+\section{The RefreshDatabase Trait}
+\label{sec:refresh-database}
+%% ─────────────────────────────────────────────────────────────────────────
+
+The \texttt{Illuminate\textbackslash{}Foundation\textbackslash{}Testing\textbackslash{}RefreshDatabase}
+trait is applied to the base \phpclass{TestCase} class, meaning every
+feature test in the suite inherits it automatically.
+
+\subsection{How RefreshDatabase Works}
+
+When \texttt{RefreshDatabase} is active:
+
+\begin{enumerate}
+  \item \textbf{Before the first test in the class}, the trait checks
+    whether the database schema needs to be refreshed. If the schema
+    is out of date (i.e.\ unapplied migrations exist), it runs
+    \texttt{php artisan migrate --env=testing} to bring the schema
+    up to date.
+
+  \item \textbf{Before each individual test method}, the trait begins
+    a database transaction (\texttt{START TRANSACTION}).
+
+  \item \textbf{The test executes}, reading and writing database records
+    freely. Any factory-generated records, API-created resources, or
+    explicit \texttt{DB::table()->insert()} calls land inside this
+    transaction.
+
+  \item \textbf{After each individual test method}, the trait rolls back
+    the transaction (\texttt{ROLLBACK}), returning the database to the
+    exact state it was in before the test started.
+\end{enumerate}
+
+The result is complete test isolation: no test can observe the side
+effects of any other test. The rollback strategy is significantly faster
+than truncating all tables between tests because it avoids full table
+scans and re-seeding.
+
+\begin{notebox}[Transaction Nesting]
+  The \texttt{RefreshDatabase} rollback works because each test's
+  database writes are nested inside the trait's outer transaction. If
+  application code explicitly calls \texttt{DB::beginTransaction()} and
+  \texttt{DB::commit()}, the inner commit does not escape the outer
+  transaction. This means that the \texttt{PrescriptionService}'s use
+  of \texttt{DB::transaction()} for atomic prescription creation is
+  fully compatible with \texttt{RefreshDatabase}.
+\end{notebox}
+
+\subsection{DatabaseMigrations vs.\ RefreshDatabase}
+
+Laravel provides two traits for database isolation:
+\texttt{RefreshDatabase} and \texttt{DatabaseMigrations}. The
+difference is significant:
+
+\begin{table}[h!]
+  \centering
+  \caption{Comparison of \texttt{RefreshDatabase} and
+    \texttt{DatabaseMigrations} traits.}
+  \label{tab:db-traits}
+  \renewcommand{\arraystretch}{1.5}
+  \begin{tabularx}{\linewidth}{@{}L{4cm} X X@{}}
+    \toprule
+    \rowcolor{PrimaryBlue}
+    \tblhdr{Trait} & \tblhdr{Isolation Mechanism} & \tblhdr{Speed} \\
+    \midrule
+    \texttt{RefreshDatabase}
+      & Wraps each test in a database transaction; rolls back after test
+      & Fast --- no table truncation or re-migration \\
+    \rowalt
+    \texttt{DatabaseMigrations}
+      & Rolls back all migrations after each test class, then re-runs
+        them before the next
+      & Slow --- full migrate down/up cycle per class \\
+    \bottomrule
+  \end{tabularx}
+\end{table}
+
+This project uses \texttt{RefreshDatabase} exclusively.
+
+%% ─────────────────────────────────────────────────────────────────────────
+\section{Passport Authentication in Tests}
+\label{sec:passport-testing}
+%% ─────────────────────────────────────────────────────────────────────────
+
+Authenticating requests in feature tests requires special handling
+because Laravel Passport's token verification pipeline normally reads
+from the \texttt{oauth\_access\_tokens} table and validates RSA
+signatures. Two strategies are available.
+
+\subsection{Strategy 1: actingAs() with the api Guard}
+
+Laravel's \texttt{actingAs(\$user, 'api')} helper bypasses the full
+Passport token verification pipeline and directly sets the authenticated
+user on the request for the duration of the test. This is the
+recommended approach for the vast majority of tests because it is fast,
+requires no token issuance, and keeps the test focused on the business
+behaviour being tested rather than the authentication mechanics.
+
+\begin{lstlisting}[style=php, caption={Using \texttt{actingAs()} to
+  authenticate as a specific user in a feature test.}]
+public function test_doctor_can_list_their_own_appointments(): void
+{
+    $clinic  = Clinic::factory()->create();
+    $doctor  = User::factory()->doctor()->forClinic($clinic)->create();
+
+    // Create 3 appointments for this doctor
+    Appointment::factory()->count(3)->for($doctor, 'doctor')->create([
+        'clinic_id' => $clinic->id,
+    ]);
+
+    // Create 2 appointments for a different doctor — should not appear
+    $otherDoctor = User::factory()->doctor()->forClinic($clinic)->create();
+    Appointment::factory()->count(2)->for($otherDoctor, 'doctor')->create([
+        'clinic_id' => $clinic->id,
+    ]);
+
+    $response = $this->actingAs($doctor, 'api')
+                     ->getJson('/api/v1/doctor/appointments');
+
+    $response->assertOk()
+             ->assertJsonCount(3, 'data')
+             ->assertJsonPath('success', true);
+}
+\end{lstlisting}
+
+\subsection{Strategy 2: Real Token Issuance}
+
+For tests that specifically verify the login flow, token revocation, or
+the Passport token response format, a real token is issued by calling
+the login endpoint directly. This requires the Passport client records
+to be seeded in the test database.
+
+The \texttt{Passport::actingAs()} method (distinct from Laravel's
+\texttt{actingAs()}) can also be used to create a token in memory and
+attach it to the request without a database write, which is useful for
+testing token-scope behaviour.
+
+\begin{lstlisting}[style=php, caption={Testing the login endpoint with a
+  real credential round-trip.}]
+public function test_valid_credentials_return_access_token(): void
+{
+    $user = User::factory()->create([
+        'email'    => 'test@example.com',
+        'password' => bcrypt('password123'),
+        'role'     => UserRole::DOCTOR,
+    ]);
+
+    $response = $this->postJson('/api/v1/auth/login', [
+        'email'    => 'test@example.com',
+        'password' => 'password123',
+    ]);
+
+    $response->assertOk()
+             ->assertJsonStructure([
+                 'success',
+                 'message',
+                 'data' => [
+                     'user',
+                     'access_token',
+                     'token_type',
+                 ],
+             ])
+             ->assertJsonPath('data.token_type', 'Bearer')
+             ->assertJsonPath('success', true);
+}
+\end{lstlisting}
+
+\subsection{Passport::actingAs() for Scope Testing}
+
+When the test needs to verify that a specific OAuth2 scope is required,
+\texttt{Passport::actingAs()} allows a token with a specific scope
+array to be injected without going through the issuance pipeline.
+This project does not use OAuth2 scopes (Personal Access Tokens carry
+an empty scope array), so this pattern is included for completeness
+rather than active use.
+
+\begin{lstlisting}[style=php, caption={\texttt{Passport::actingAs()}
+  --- scope-aware authentication for hypothetical scope-gated endpoints.}]
+use Laravel\Passport\Passport;
+
+public function test_token_with_insufficient_scope_is_rejected(): void
+{
+    $user = User::factory()->doctor()->create();
+
+    // Issue an in-memory token with no scopes
+    Passport::actingAs($user, []);
+
+    $response = $this->getJson('/api/v1/doctor/appointments');
+
+    // In the current implementation all PATs have full access,
+    // so this would return 200. Shown for illustration only.
+    $response->assertOk();
+}
+\end{lstlisting}
+
+%% ─────────────────────────────────────────────────────────────────────────
+\section{The Base TestCase Class}
+\label{sec:base-testcase}
+%% ─────────────────────────────────────────────────────────────────────────
+
+The base \texttt{TestCase} class at \texttt{tests/TestCase.php} is
+the foundation from which every test class inherits. It applies shared
+traits, registers Passport keys, seeds the Passport client records
+required for token issuance tests, and provides shared helper methods
+used across the test suite.
+
+\begin{lstlisting}[style=php, caption={\texttt{tests/TestCase.php} ---
+  Base test case with Passport configuration and shared helpers.}]
+<?php
+
+namespace Tests;
+
+use App\Models\Clinic;
+use App\Models\User;
+use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Foundation\Testing\TestCase as BaseTestCase;
+use Laravel\Passport\Passport;
+
+abstract class TestCase extends BaseTestCase
+{
+    use RefreshDatabase;
+
+    /**
+     * Run before each test method.
+     *
+     * Passport::loadKeysFrom() tells Passport where to find the RSA
+     * keys without requiring passport:install to have been executed.
+     * In the testing environment the keys are loaded from the
+     * storage/ directory where they were generated once during initial
+     * project setup.
+     */
+    protected function setUp(): void
+    {
+        parent::setUp();
+
+        // Point Passport at the pre-generated key files.
+        // The testing environment does not run passport:install; the
+        // keys generated during local setup are committed to storage/
+        // (but never to version control in a real project).
+        Passport::loadKeysFrom(storage_path());
+    }
+
+    // ──────────────────────────────────────────────────────────────────
+    // Convenience Authentication Helpers
+    // ──────────────────────────────────────────────────────────────────
+
+    /**
+     * Authenticate the test client as a Super Administrator.
+     */
+    protected function actingAsSuperAdmin(?User $user = null): static
+    {
+        $user ??= User::factory()->superAdmin()->create();
+        return $this->actingAs($user, 'api');
+    }
+
+    /**
+     * Authenticate the test client as a Doctor bound to the given clinic.
+     */
+    protected function actingAsDoctor(Clinic $clinic, ?User $user = null): static
+    {
+        $user ??= User::factory()->doctor()->forClinic($clinic)->create();
+        return $this->actingAs($user, 'api');
+    }
+
+    /**
+     * Authenticate the test client as an Assistant bound to the given clinic.
+     */
+    protected function actingAsAssistant(Clinic $clinic, ?User $user = null): static
+    {
+        $user ??= User::factory()->assistant()->forClinic($clinic)->create();
+        return $this->actingAs($user, 'api');
+    }
+
+    // ──────────────────────────────────────────────────────────────────
+    // JSON Structure Helpers
+    // ──────────────────────────────────────────────────────────────────
+
+    /**
+     * Assert that the response carries the standard success envelope
+     * and the expected HTTP status code.
+     */
+    protected function assertSuccessResponse(
+        \Illuminate\Testing\TestResponse $response,
+        int $status = 200,
+    ): void {
+        $response->assertStatus($status)
+                 ->assertJsonPath('success', true)
+                 ->assertJsonStructure(['success', 'message', 'data']);
+    }
+
+    /**
+     * Assert that the response carries the standard error envelope
+     * and the expected HTTP status code.
+     */
+    protected function assertErrorResponse(
+        \Illuminate\Testing\TestResponse $response,
+        int    $status,
+        string $message,
+    ): void {
+        $response->assertStatus($status)
+                 ->assertJsonPath('success', false)
+                 ->assertJsonPath('message', $message);
+    }
+}
+\end{lstlisting}
+
+\begin{notebox}[RefreshDatabase on the Base Class]
+  Applying \texttt{RefreshDatabase} to the base \texttt{TestCase} rather
+  than to each individual test class ensures that no test class can
+  accidentally omit it and pollute the database state for subsequent
+  tests. Every test that extends this \phpclass{TestCase} is
+  automatically wrapped in a transaction.
+\end{notebox}
+
+%% ─────────────────────────────────────────────────────────────────────────
+\section{Model Factories}
+\label{sec:factories}
+%% ─────────────────────────────────────────────────────────────────────────
+
+All test data is generated through Laravel model factories. The
+factories reside in \texttt{database/factories/} and use the Faker
+library to produce realistic, randomised values. Each factory defines
+state methods that compose to build complex test scenarios with minimal
+boilerplate.
+
+\subsection{UserFactory}
+
+The \phpclass{UserFactory} is the most frequently used factory in the
+suite. Its state methods (\texttt{superAdmin()}, \texttt{doctor()},
+\texttt{assistant()}, \texttt{forClinic()}, \texttt{inactive()}) allow
+any combination of role and clinic to be expressed in a single fluent
+chain.
+
+\begin{lstlisting}[style=php, caption={\texttt{database/factories/UserFactory.php}
+  --- Role and clinic state methods for composable test data.}]
+<?php
+
+namespace Database\Factories;
+
+use App\Enums\UserRole;
+use App\Models\Clinic;
+use Illuminate\Database\Eloquent\Factories\Factory;
+use Illuminate\Support\Facades\Hash;
+
+class UserFactory extends Factory
+{
+    public function definition(): array
+    {
+        return [
+            'name'      => fake()->name(),
+            'email'     => fake()->unique()->safeEmail(),
+            'password'  => Hash::make('password'),
+            'role'      => UserRole::DOCTOR,
+            'clinic_id' => Clinic::factory(),
+            'is_active' => true,
+        ];
+    }
+
+    public function superAdmin(): static
+    {
+        return $this->state(fn(array $attrs) => [
+            'role'      => UserRole::SUPER_ADMIN,
+            'clinic_id' => null,
+        ]);
+    }
+
+    public function doctor(): static
+    {
+        return $this->state(fn(array $attrs) => [
+            'role' => UserRole::DOCTOR,
+        ]);
+    }
+
+    public function assistant(): static
+    {
+        return $this->state(fn(array $attrs) => [
+            'role' => UserRole::ASSISTANT,
+        ]);
+    }
+
+    public function forClinic(Clinic $clinic): static
+    {
+        return $this->state(fn(array $attrs) => [
+            'clinic_id' => $clinic->id,
+        ]);
+    }
+
+    public function inactive(): static
+    {
+        return $this->state(fn(array $attrs) => [
+            'is_active' => false,
+        ]);
+    }
+}
+\end{lstlisting}
+
+\subsection{ClinicFactory}
+
+\begin{lstlisting}[style=php, caption={\texttt{database/factories/ClinicFactory.php}.}]
+<?php
+
+namespace Database\Factories;
+
+use Illuminate\Database\Eloquent\Factories\Factory;
+
+class ClinicFactory extends Factory
+{
+    public function definition(): array
+    {
+        return [
+            'name'      => fake()->unique()->company() . ' Clinic',
+            'email'     => fake()->unique()->companyEmail(),
+            'phone'     => fake()->phoneNumber(),
+            'address'   => fake()->address(),
+            'is_active' => true,
+        ];
+    }
+
+    public function inactive(): static
+    {
+        return $this->state(fn(array $attrs) => [
+            'is_active' => false,
+        ]);
+    }
+}
+\end{lstlisting}
+
+\subsection{PatientFactory}
+
+\begin{lstlisting}[style=php, caption={\texttt{database/factories/PatientFactory.php}.}]
+<?php
+
+namespace Database\Factories;
+
+use App\Enums\Gender;
+use App\Models\Clinic;
+use Illuminate\Database\Eloquent\Factories\Factory;
+
+class PatientFactory extends Factory
+{
+    public function definition(): array
+    {
+        return [
+            'name'          => fake()->name(),
+            'phone'         => fake()->unique()->phoneNumber(),
+            'email'         => fake()->optional()->safeEmail(),
+            'date_of_birth' => fake()->date('Y-m-d', '-18 years'),
+            'gender'        => fake()->randomElement(Gender::cases()),
+            'address'       => fake()->optional()->address(),
+            'clinic_id'     => Clinic::factory(),
+        ];
+    }
+
+    public function forClinic(Clinic $clinic): static
+    {
+        return $this->state(fn(array $attrs) => [
+            'clinic_id' => $clinic->id,
+        ]);
+    }
+
+    public function male(): static
+    {
+        return $this->state(fn(array $attrs) => [
+            'gender' => Gender::MALE,
+        ]);
+    }
+
+    public function female(): static
+    {
+        return $this->state(fn(array $attrs) => [
+            'gender' => Gender::FEMALE,
+        ]);
+    }
+}
+\end{lstlisting}
+
+\subsection{DoctorScheduleFactory}
+
+\begin{lstlisting}[style=php, caption={\texttt{database/factories/DoctorScheduleFactory.php}
+  --- Day-of-week state methods for readable schedule setup.}]
+<?php
+
+namespace Database\Factories;
+
+use App\Models\User;
+use Illuminate\Database\Eloquent\Factories\Factory;
+
+class DoctorScheduleFactory extends Factory
+{
+    public function definition(): array
+    {
+        return [
+            'doctor_id'     => User::factory()->doctor(),
+            'clinic_id'     => null, // resolved from doctor's clinic_id in service
+            'day_of_week'   => fake()->numberBetween(0, 6),
+            'start_time'    => '09:00',
+            'end_time'      => '17:00',
+            'slot_duration' => 30,
+        ];
+    }
+
+    public function sunday(): static
+    {
+        return $this->state(fn(array $attrs) => ['day_of_week' => 0]);
+    }
+
+    public function monday(): static
+    {
+        return $this->state(fn(array $attrs) => ['day_of_week' => 1]);
+    }
+
+    public function tuesday(): static
+    {
+        return $this->state(fn(array $attrs) => ['day_of_week' => 2]);
+    }
+
+    public function wednesday(): static
+    {
+        return $this->state(fn(array $attrs) => ['day_of_week' => 3]);
+    }
+
+    public function thursday(): static
+    {
+        return $this->state(fn(array $attrs) => ['day_of_week' => 4]);
+    }
+
+    public function friday(): static
+    {
+        return $this->state(fn(array $attrs) => ['day_of_week' => 5]);
+    }
+
+    public function saturday(): static
+    {
+        return $this->state(fn(array $attrs) => ['day_of_week' => 6]);
+    }
+
+    public function slotDuration(int $minutes): static
+    {
+        return $this->state(fn(array $attrs) => ['slot_duration' => $minutes]);
+    }
+}
+\end{lstlisting}
+
+\subsection{AppointmentFactory}
+
+\begin{lstlisting}[style=php, caption={\texttt{database/factories/AppointmentFactory.php}
+  --- Status state methods for lifecycle scenario testing.}]
+<?php
+
+namespace Database\Factories;
+
+use App\Enums\AppointmentStatus;
+use App\Models\Clinic;
+use App\Models\Patient;
+use App\Models\User;
+use Illuminate\Database\Eloquent\Factories\Factory;
+
+class AppointmentFactory extends Factory
+{
+    public function definition(): array
+    {
+        $clinic = Clinic::factory()->create();
+
+        return [
+            'doctor_id'        => User::factory()->doctor()->forClinic($clinic),
+            'patient_id'       => Patient::factory()->forClinic($clinic),
+            'clinic_id'        => $clinic->id,
+            'booked_by'        => User::factory()->assistant()->forClinic($clinic),
+            'appointment_date' => fake()->dateTimeBetween('now', '+3 months')
+                                        ->format('Y-m-d'),
+            'start_time'       => '09:00',
+            'end_time'         => '09:30',
+            'status'           => AppointmentStatus::PENDING,
+            'notes'            => fake()->optional()->sentence(),
+        ];
+    }
+
+    public function pending(): static
+    {
+        return $this->state(fn(array $attrs) => [
+            'status' => AppointmentStatus::PENDING,
+        ]);
+    }
+
+    public function confirmed(): static
+    {
+        return $this->state(fn(array $attrs) => [
+            'status' => AppointmentStatus::CONFIRMED,
+        ]);
+    }
+
+    public function completed(): static
+    {
+        return $this->state(fn(array $attrs) => [
+            'status' => AppointmentStatus::COMPLETED,
+        ]);
+    }
+
+    public function cancelled(): static
+    {
+        return $this->state(fn(array $attrs) => [
+            'status' => AppointmentStatus::CANCELLED,
+        ]);
+    }
+
+    public function forDate(string $date): static
+    {
+        return $this->state(fn(array $attrs) => [
+            'appointment_date' => $date,
+        ]);
+    }
+
+    public function atTime(string $startTime, string $endTime): static
+    {
+        return $this->state(fn(array $attrs) => [
+            'start_time' => $startTime,
+            'end_time'   => $endTime,
+        ]);
+    }
+}
+\end{lstlisting}
+
+\subsection{PrescriptionFactory}
+
+\begin{lstlisting}[style=php, caption={\texttt{database/factories/PrescriptionFactory.php}.}]
+<?php
+
+namespace Database\Factories;
+
+use App\Models\Appointment;
+use Illuminate\Database\Eloquent\Factories\Factory;
+
+class PrescriptionFactory extends Factory
+{
+    public function definition(): array
+    {
+        return [
+            'appointment_id' => Appointment::factory()->completed(),
+            'diagnosis'      => fake()->sentence(8),
+            'notes'          => fake()->optional()->paragraph(),
+        ];
+    }
+}
+\end{lstlisting}
+
+\subsection{PrescriptionItemFactory}
+
+\begin{lstlisting}[style=php, caption={\texttt{database/factories/PrescriptionItemFactory.php}.}]
+<?php
+
+namespace Database\Factories;
+
+use App\Models\Prescription;
+use Illuminate\Database\Eloquent\Factories\Factory;
+
+class PrescriptionItemFactory extends Factory
+{
+    public function definition(): array
+    {
+        $medicines = [
+            'Ibuprofen', 'Paracetamol', 'Amoxicillin', 'Omeprazole',
+            'Metformin', 'Atorvastatin', 'Amlodipine', 'Diclofenac',
+        ];
+
+        return [
+            'prescription_id' => Prescription::factory(),
+            'medicine_name'   => fake()->randomElement($medicines),
+            'dosage'          => fake()->randomElement([
+                '500mg', '250mg', '1g', '400mg', '200mg', '100mg',
+            ]),
+            'frequency'       => fake()->randomElement([
+                'Once daily', 'Twice daily', 'Three times daily',
+                'Every 8 hours', 'As needed',
+            ]),
+            'duration'        => fake()->randomElement([
+                '3 days', '5 days', '7 days', '10 days', '14 days',
+            ]),
+            'notes'           => fake()->optional()->sentence(),
+        ];
+    }
+}
+\end{lstlisting}
+
+%% ─────────────────────────────────────────────────────────────────────────
+\section{Test Directory Structure}
+\label{sec:test-structure}
+%% ─────────────────────────────────────────────────────────────────────────
+
+The test suite is organised by role surface, mirroring the route group
+structure of the application. Each role's test classes cover all
+endpoints under that role's prefix.
+
+\begin{lstlisting}[style=bash, caption={Test directory tree.}]
+tests/
+├── TestCase.php                    # Base class with shared helpers
+│
+├── Unit/
+│   ├── Enums/
+│   │   ├── AppointmentStatusTest.php  # canTransitionTo() matrix
+│   │   └── UserRoleTest.php           # isClinicalStaff(), label()
+│   └── Services/
+│       └── SlotGeneratorTest.php      # Pure slot arithmetic logic
+│
+└── Feature/
+    ├── Auth/
+    │   ├── LoginTest.php              # Valid login, bad creds, inactive
+    │   ├── LogoutTest.php             # Token revocation
+    │   └── MeTest.php                 # Profile retrieval
+    │
+    ├── Admin/
+    │   ├── DashboardTest.php          # KPI aggregate, date filter
+    │   ├── Clinics/
+    │   │   ├── ListClinicsTest.php
+    │   │   ├── CreateClinicTest.php
+    │   │   ├── ShowClinicTest.php
+    │   │   ├── UpdateClinicTest.php
+    │   │   └── DeleteClinicTest.php
+    │   └── Users/
+    │       ├── ListUsersTest.php
+    │       ├── CreateUserTest.php
+    │       ├── ShowUserTest.php
+    │       ├── UpdateUserTest.php
+    │       ├── DeleteUserTest.php
+    │       ├── UpdateUserRoleTest.php  # Self-demotion guard
+    │       └── UpdateUserStatusTest.php
+    │
+    ├── Doctor/
+    │   ├── Schedules/
+    │   │   ├── ListSchedulesTest.php
+    │   │   ├── CreateScheduleTest.php  # Duplicate day guard
+    │   │   ├── ShowScheduleTest.php
+    │   │   ├── UpdateScheduleTest.php
+    │   │   └── DeleteScheduleTest.php
+    │   ├── Appointments/
+    │   │   ├── ListAppointmentsTest.php # Doctor-scoped listing
+    │   │   ├── ShowAppointmentTest.php
+    │   │   └── UpdateStatusTest.php     # All transition paths
+    │   ├── Patients/
+    │   │   ├── ListPatientsTest.php     # FULLTEXT search
+    │   │   └── ShowPatientTest.php      # Cross-clinic guard
+    │   └── Prescriptions/
+    │       ├── CreatePrescriptionTest.php  # Ownership + state guards
+    │       ├── ShowPrescriptionTest.php
+    │       └── UpdatePrescriptionTest.php
+    │
+    └── Assistant/
+        ├── AvailableSlotsTest.php          # Slot computation
+        ├── Patients/
+        │   ├── ListPatientsTest.php
+        │   ├── CreatePatientTest.php       # Phone uniqueness per clinic
+        │   ├── ShowPatientTest.php
+        │   └── UpdatePatientTest.php
+        └── Appointments/
+            ├── ListAppointmentsTest.php    # Clinic-wide listing
+            ├── ShowAppointmentTest.php
+            ├── BookAppointmentTest.php     # Conflict, out-of-schedule
+            ├── RescheduleAppointmentTest.php # State guard
+            └── CancelAppointmentTest.php
+\end{lstlisting}
+
+%% ─────────────────────────────────────────────────────────────────────────
+\section{Running the Test Suite}
+\label{sec:running-tests}
+%% ─────────────────────────────────────────────────────────────────────────
+
+\subsection{Full Suite}
+
+\begin{lstlisting}[style=bash, caption={Run all tests.}]
+php artisan test
+# or equivalently:
+./vendor/bin/phpunit
+\end{lstlisting}
+
+\subsection{Specific Suite or Filter}
+
+\begin{lstlisting}[style=bash, caption={Run only the Feature suite, or filter
+  to a specific test class or method.}]
+# Feature suite only
+php artisan test --testsuite=Feature
+
+# Specific test class
+php artisan test --filter=BookAppointmentTest
+
+# Specific test method
+php artisan test --filter=test_booking_an_already_taken_slot_returns_conflict
+
+# Specific directory
+php artisan test tests/Feature/Doctor/
+\end{lstlisting}
+
+\subsection{Coverage Report}
+
+\begin{lstlisting}[style=bash, caption={Generate an HTML coverage report
+  (requires Xdebug or PCOV).}]
+./vendor/bin/phpunit --coverage-html coverage/
+
+# View in browser
+open coverage/index.html
+\end{lstlisting}
+
+\subsection{Parallel Execution}
+
+Laravel's \texttt{--parallel} flag runs test classes concurrently across
+multiple CPU cores using the \texttt{paratest} package. Because each
+test is wrapped in its own transaction, parallel execution is safe.
+
+\begin{lstlisting}[style=bash, caption={Run tests in parallel across 4 workers.}]
+php artisan test --parallel --processes=4
+\end{lstlisting}
+
+\begin{warningbox}[Parallel Execution and the Test Database]
+  When running in parallel, each worker process requires its own
+  database connection. Laravel's parallel test runner creates separate
+  test database copies (e.g.\ \texttt{clinic\_management\_test\_1},
+  \texttt{clinic\_management\_test\_2}) automatically when
+  \texttt{--parallel} is specified, provided the database user has
+  \texttt{CREATE DATABASE} privileges.
+\end{warningbox}
+
+%% ─────────────────────────────────────────────────────────────────────────
+\section{Test Configuration Summary}
+\label{sec:test-config-summary}
+%% ─────────────────────────────────────────────────────────────────────────
+
+\begin{table}[h!]
+  \centering
+  \caption{Summary of the test environment configuration and its
+    rationale.}
+  \label{tab:test-config-summary}
+  \renewcommand{\arraystretch}{1.5}
+  \begin{tabularx}{\linewidth}{@{}L{3.8cm} L{3.5cm} X@{}}
+    \toprule
+    \rowcolor{PrimaryBlue}
+    \tblhdr{Configuration Key} & \tblhdr{Test Value} & \tblhdr{Rationale} \\
+    \midrule
+    \texttt{DB\_CONNECTION}
+      & \texttt{mysql}
+      & FULLTEXT search and TIME wire format require MySQL. \\
+    \rowalt
+    \texttt{DB\_DATABASE}
+      & \texttt{clinic\_management\_test}
+      & Dedicated schema isolates test activity from the development
+        database. \\
+    \texttt{CACHE\_DRIVER}
+      & \texttt{array}
+      & In-memory array cache requires no Redis instance in CI;
+        \texttt{Cache::lock()} still functions correctly. \\
+    \rowalt
+    \texttt{QUEUE\_CONNECTION}
+      & \texttt{sync}
+      & Dispatched jobs execute immediately within the test request
+        cycle, so post-dispatch assertions see the job's side effects. \\
+    \texttt{SESSION\_DRIVER}
+      & \texttt{array}
+      & API tests do not use cookie sessions; array driver avoids
+        filesystem writes. \\
+    \rowalt
+    \texttt{MAIL\_MAILER}
+      & \texttt{log}
+      & Captures outgoing mail in the Laravel log without hitting an
+        SMTP server or a real inbox. \\
+    \texttt{APP\_ENV}
+      & \texttt{testing}
+      & Activates Laravel's testing-specific behaviour, including
+        the \texttt{RefreshDatabase} transaction strategy. \\
+    \rowalt
+    Database isolation
+      & \texttt{RefreshDatabase} (transaction rollback)
+      & Fastest isolation mechanism; compatible with nested
+        \texttt{DB::transaction()} calls in service classes. \\
+    Authentication
+      & \texttt{actingAs(\$user, 'api')}
+      & Bypasses Passport token pipeline; keeps test logic focused
+        on the business behaviour under test. \\
+    \bottomrule
+  \end{tabularx}
+\end{table}

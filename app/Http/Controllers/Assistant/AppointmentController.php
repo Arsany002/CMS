@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers\Assistant;
 
+use App\Exceptions\ClinicScopeViolationException;
 use App\Http\Controllers\Controller;
 use App\Http\Requests\Appointment\AvailableSlotsRequest;
 use App\Http\Requests\Appointment\StoreAppointmentRequest;
@@ -48,12 +49,9 @@ class AppointmentController extends Controller
         // BR-07: Patient must belong to the same clinic (using Repository pattern)
         $patient = $this->patientRepo->getPatientById($request->patient_id);
 
-        // Fixed truncation & Security Update: Compare against the user's clinic_id
-        abort_if(
-            $patient->clinic_id !== $request->user()->clinic_id,
-            403,
-            'Patient does not belong to this clinic.'
-        );
+        if ($patient->clinic_id !== $request->user()->clinic_id) {
+            throw new ClinicScopeViolationException('Patient does not belong to this clinic.');
+        }
 
         $data = array_merge($request->validated(), [
             'clinic_id' => $request->user()->clinic_id,

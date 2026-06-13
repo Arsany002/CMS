@@ -3,10 +3,11 @@
 namespace App\Services;
 
 use App\Enums\AppointmentStatus;
+use App\Exceptions\ClinicScopeViolationException;
+use App\Exceptions\InvalidAppointmentStateException;
 use App\Models\Appointment;
 use App\Models\Prescription;
 use App\Repositories\PrescriptionRepository;
-use Illuminate\Validation\ValidationException;
 
 class PrescriptionService
 {
@@ -18,16 +19,12 @@ class PrescriptionService
     {
         // BR-04: Only the appointment's doctor can create a prescription
         if ($appointment->doctor_id !== $doctorId) {
-            throw ValidationException::withMessages([
-                'appointment_id' => ['You are not the doctor for this appointment.']
-            ]);
+            throw new ClinicScopeViolationException('You are not the doctor assigned to this appointment.');
         }
 
         // BR-06: No prescription can be written for a cancelled appointment
         if ($appointment->status === AppointmentStatus::CANCELLED) {
-            throw ValidationException::withMessages([
-                'appointment_id' => ['Cannot create a prescription for a cancelled appointment.']
-            ]);
+            throw new InvalidAppointmentStateException('Cannot create a prescription for a cancelled appointment.');
         }
 
         // Auto-fill contextual data to ensure database integrity

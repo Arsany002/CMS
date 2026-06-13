@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers\Doctor;
 
+use App\Exceptions\ClinicScopeViolationException;
 use App\Http\Controllers\Controller;
 use App\Http\Requests\Prescription\StorePrescriptionRequest;
 use App\Http\Requests\Prescription\UpdatePrescriptionRequest;
@@ -56,13 +57,9 @@ class PrescriptionController extends Controller
 
     public function show(Request $request, Prescription $prescription): JsonResponse
     {
-        // Missing Data Added: Security Check
-        // A doctor should never be able to view another doctor's prescription by guessing the ID.
-        abort_if(
-            $prescription->doctor_id !== $request->user()->id,
-            403,
-            'Unauthorized access to this prescription.'
-        );
+        if ($prescription->doctor_id !== $request->user()->id) {
+            throw new ClinicScopeViolationException('You do not have access to this prescription.');
+        }
 
         return $this->success(
             data: new PrescriptionResource($this->repo->find($prescription->id))
@@ -71,12 +68,9 @@ class PrescriptionController extends Controller
 
     public function update(UpdatePrescriptionRequest $request, Prescription $prescription): JsonResponse
     {
-        // Security Check
-        abort_if(
-            $prescription->doctor_id !== $request->user()->id,
-            403,
-            'Unauthorized access to this prescription.'
-        );
+        if ($prescription->doctor_id !== $request->user()->id) {
+            throw new ClinicScopeViolationException('You do not have access to this prescription.');
+        }
 
         // Missing Data Added: Extract the items array to pass to the service
         $data = $request->only(['diagnosis', 'notes']);

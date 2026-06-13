@@ -6,9 +6,9 @@ use Exception;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 
-class AppointmentConflictException extends Exception
+class InvalidAppointmentStateException extends Exception
 {
-    public function __construct(string $message = 'This time slot is already booked.')
+    public function __construct(string $message = 'This action is not allowed for the current appointment state.')
     {
         parent::__construct($message);
     }
@@ -18,6 +18,6 @@ class AppointmentConflictException extends Exception
         return response()->json([
             'success' => false,
             'message' => $this->getMessage(),
-        ], 409);
+        ], 422);
     }
 }
