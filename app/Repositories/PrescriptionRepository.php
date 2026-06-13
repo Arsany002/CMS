@@ -8,7 +8,7 @@ use Illuminate\Support\Facades\DB;
 
 class PrescriptionRepository
 {
-    public function allForDoctor(int $doctorId, int $perPage = 15): LengthAwarePaginator
+    public function allForDoctor(string $doctorId, int $perPage = 15): LengthAwarePaginator
     {
         return Prescription::select(['id', 'appointment_id', 'doctor_id', 'patient_id', 'clinic_id', 'diagnosis', 'notes', 'created_at'])
             ->with([

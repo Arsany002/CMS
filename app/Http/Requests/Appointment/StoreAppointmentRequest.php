@@ -12,7 +12,7 @@ class StoreAppointmentRequest extends FormRequest
      */
     public function authorize(): bool
     {
-        return false;
+        return true;
     }
 
     /**
@@ -28,7 +28,6 @@ class StoreAppointmentRequest extends FormRequest
             'appointment_date' => 'required|date|after:now',
             'start_time' => 'required|date_format:H:i',
             'notes' => 'nullable|string|max:1000',
-            //
         ];
     }
 }

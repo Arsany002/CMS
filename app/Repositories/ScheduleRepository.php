@@ -10,7 +10,7 @@ class ScheduleRepository
     /**
      * Get all schedule entries for a specific doctor.
      */
-    public function allForDoctor(int $doctorId): Collection
+    public function allForDoctor(string $doctorId): Collection
     {
         return DoctorSchedule::select(['id', 'doctor_id', 'clinic_id', 'day_of_week', 'start_time', 'end_time', 'slot_duration', 'is_active'])
             ->where('doctor_id', $doctorId)
@@ -20,7 +20,7 @@ class ScheduleRepository
     /**
      * Find a specific schedule entry by ID.
      */
-    public function find(int $id): DoctorSchedule
+    public function find(string $id): DoctorSchedule
     {
         return DoctorSchedule::findOrFail($id);
     }
@@ -54,7 +54,7 @@ class ScheduleRepository
     /**
      * Find an active schedule for a specific doctor on a specific day of the week.
      */
-    public function findForDayAndDoctor(int $doctorId, int $dayOfWeek): ?DoctorSchedule
+    public function findForDayAndDoctor(string $doctorId, int $dayOfWeek): ?DoctorSchedule
     {
         return DoctorSchedule::where('doctor_id', $doctorId)
             ->where('day_of_week', $dayOfWeek)

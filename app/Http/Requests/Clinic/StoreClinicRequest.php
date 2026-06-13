@@ -25,7 +25,7 @@ class StoreClinicRequest extends FormRequest
         return [
             'name'         => 'required|string|max:255',
             'address'      => 'nullable|string|max:500',
-            'phone_number' => 'nullable|string|max:20',
+            'phone'        => 'nullable|string|max:20',
             'email'        => 'required|email|max:255|unique:clinics,email',
         ];
     }

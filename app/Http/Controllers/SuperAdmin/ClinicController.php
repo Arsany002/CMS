@@ -32,8 +32,11 @@ class ClinicController extends Controller
     {
         $clinic = $this->repo->createClinic($request->validated());
 
+        // Wrap in a resource, then convert to an array immediately
+        $data = (new ClinicResource($clinic))->toArray(request());
+
         return $this->success(
-            data: new ClinicResource($clinic),
+            data: $data,
             message: 'Clinic created',
             status: 201
         );

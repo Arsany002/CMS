@@ -10,7 +10,7 @@ use App\Models\User;
 use App\Repositories\UserRepository;
 use App\Traits\ApiResponse;
 use Illuminate\Http\JsonResponse;
-use Request;
+use Illuminate\Http\Request;
 
 class UserController extends Controller
 {
@@ -34,7 +34,8 @@ class UserController extends Controller
     public function store(StoreUserRequest $request): JsonResponse
     {
         $data = array_merge($request->validated(), [
-            'password' => bcrypt($request->password),
+            'password'  => bcrypt($request->password),
+            'is_active' => true,
         ]);
 
         $user = $this->repo->createUser($data);

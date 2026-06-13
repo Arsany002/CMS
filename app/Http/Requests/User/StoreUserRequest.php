@@ -28,7 +28,7 @@ class StoreUserRequest extends FormRequest
             'email' => 'required|email|max:255|unique:users,email',
             'password' => 'required|string|min:8|confirmed',
             'phone' => 'nullable|string|max:20',
-            'role' => 'required|in:admin,doctor,patient',
+            'role' => 'required|in:super_admin,doctor,assistant',
             //
         ];
     }

@@ -14,7 +14,7 @@ class PrescriptionService
         private PrescriptionRepository $repo
     ) {}
 
-    public function create(array $data, array $items, Appointment $appointment, int $doctorId)
+    public function create(array $data, array $items, Appointment $appointment, string $doctorId)
     {
         // BR-04: Only the appointment's doctor can create a prescription
         if ($appointment->doctor_id !== $doctorId) {

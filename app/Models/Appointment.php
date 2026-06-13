@@ -25,6 +25,10 @@ class Appointment extends Model
         'notes',
     ];
 
+    protected $attributes = [
+        'status' => 'pending',
+    ];
+
     protected $casts = [
         'appointment_date' => 'date',
         'status'           => AppointmentStatus::class,

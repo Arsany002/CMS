@@ -17,7 +17,7 @@ return new class extends Migration
             $table->string('name');
             $table->string('email')->unique();
             $table->string('password');
-            $table->string('phone');
+            $table->string('phone')->nullable();
             $table->enum('role', ['super_admin', 'doctor', 'assistant']);
             $table->boolean('is_active')->default(true);
             $table->timestamps();

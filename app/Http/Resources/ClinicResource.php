@@ -21,14 +21,17 @@ class ClinicResource extends JsonResource
             // Core Clinic Data
             'name'         => $this->name,
             'address'      => $this->address,
-            'phone_number' => $this->phone_number,
+            'phone'        => $this->phone,
             'email'        => $this->email,
             'is_active'    => (bool) $this->is_active,
 
             // Conditionally Loaded Relationships (One-to-Many)
-            'doctors'      => UserResource::collection($this->whenLoaded('doctors')),
-            'appointments' => AppointmentResource::collection($this->whenLoaded('appointments')),
-
+            'doctors' => UserResource::collection(
+                $this->doctors ?? collect()
+            ),
+            'appointments' => AppointmentResource::collection(
+                $this->appointments ?? collect()
+            ),
             // Timestamps
             'created_at' => $this->created_at?->format('Y-m-d H:i:s'),
             'updated_at' => $this->updated_at?->format('Y-m-d H:i:s'),

@@ -31,7 +31,7 @@ class AppointmentController extends Controller
         );
     }
 
-    public function show(Request $request, int $id): JsonResponse
+    public function show(Request $request, string $id): JsonResponse
     {
         $appointment = $this->repo->findForDoctor($id, $request->user()->id);
 
@@ -40,7 +40,7 @@ class AppointmentController extends Controller
         );
     }
 
-    public function updateStatus(UpdateAppointmentStatusRequest $request, int $id): JsonResponse
+    public function updateStatus(UpdateAppointmentStatusRequest $request, string $id): JsonResponse
     {
         $appointment = $this->repo->findForDoctor($id, $request->user()->id);
         $updated = $this->service->updateStatus($appointment, $request->status);

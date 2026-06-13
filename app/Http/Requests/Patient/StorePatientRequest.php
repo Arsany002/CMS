@@ -2,8 +2,10 @@
 
 namespace App\Http\Requests\Patient;
 
+use App\Enums\Gender;
 use Illuminate\Contracts\Validation\ValidationRule;
 use Illuminate\Foundation\Http\FormRequest;
+use Illuminate\Validation\Rules\Enum;
 
 class StorePatientRequest extends FormRequest
 {
@@ -23,14 +25,12 @@ class StorePatientRequest extends FormRequest
     public function rules(): array
     {
         return [
-            'name' => 'required|string|max:255',
-            'phone' => 'nullable|string|max:20',
-            'email' => 'nullable|email|max:255|unique:patients,email',
-            'date_of_birth' => 'nullable|date',
-            'gender' => 'required|in:([Gender::MALE->value, Gender::FEMALE->value])',
-            'address' => 'nullable|string|max:500',
-             
-            
+            'name'          => ['required', 'string', 'max:255'],
+            'phone'         => ['nullable', 'string', 'max:20'],
+            'email'         => ['nullable', 'email', 'max:255', 'unique:patients,email'],
+            'date_of_birth' => ['nullable', 'date'],
+            'gender'        => ['required', new Enum(Gender::class)],
+            'address'       => ['nullable', 'string', 'max:500'],
         ];
     }
 }

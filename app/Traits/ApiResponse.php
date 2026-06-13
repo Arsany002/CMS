@@ -15,7 +15,7 @@ trait ApiResponse
 
         if ($data !== null) {
             // If it's a paginator or API Resource Collection, handle the nested structure
-            if (method_exists($data, 'toArray')) {
+            if (is_object($data) && method_exists($data, 'toArray')) {
                 $paginated = $data->toArray(request());
 
                 // Safely grab the data array, falling back to the whole array if 'data' key doesn't exist

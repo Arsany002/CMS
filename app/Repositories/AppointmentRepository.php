@@ -7,7 +7,7 @@ use Illuminate\Pagination\LengthAwarePaginator;
 
 class AppointmentRepository
 {
-    public function allForDoctor(int $doctorId, array $filters = [], int $perPage = 15): LengthAwarePaginator
+    public function allForDoctor(string $doctorId, array $filters = [], int $perPage = 15): LengthAwarePaginator
     {
         return Appointment::select(['id', 'doctor_id', 'patient_id', 'booked_by', 'appointment_date', 'start_time', 'end_time', 'status', 'notes'])
             ->with([
@@ -20,7 +20,7 @@ class AppointmentRepository
             ->paginate($perPage);
     }
 
-    public function allForClinic(int $clinicId, array $filters = [], int $perPage = 15): LengthAwarePaginator
+    public function allForClinic(string $clinicId, array $filters = [], int $perPage = 15): LengthAwarePaginator
     {
         return Appointment::select(['id', 'clinic_id', 'doctor_id', 'patient_id', 'booked_by', 'appointment_date', 'start_time', 'end_time', 'status', 'notes'])
             ->with([
@@ -60,7 +60,7 @@ class AppointmentRepository
             ->findOrFail($id);
     }
 
-    public function findForDoctor(string $id, string $doctorId): Appointment
+    public function findForDoctor(string $id, string $doctorId): Appointment  // doctorId is UUID string
     {
         return Appointment::select(['id', 'doctor_id', 'patient_id', 'appointment_date', 'start_time', 'end_time', 'status', 'notes'])
             ->with([

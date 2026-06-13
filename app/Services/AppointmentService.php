@@ -18,21 +18,16 @@ class AppointmentService
         private ScheduleRepository $scheduleRepo,
     ) {}
 
-    private function slotsCacheKey(int $doctorId, string $date): string
+    private function slotsCacheKey(string $doctorId, string $date): string
     {
         return "slots:{$doctorId}:{$date}";
     }
 
-    private function slotsCache(int $doctorId): \Illuminate\Cache\TaggedCache
-    {
-        return Cache::tags(["doctor-slots", "doctor-slots:{$doctorId}"]);
-    }
-
-    public function getAvailableSlots(int $doctorId, string $date): array
+    public function getAvailableSlots(string $doctorId, string $date): array
     {
         $cacheKey = $this->slotsCacheKey($doctorId, $date);
 
-        return $this->slotsCache($doctorId)->remember($cacheKey, 300, function () use ($doctorId, $date) {
+        return Cache::remember($cacheKey, 300, function () use ($doctorId, $date) {
             $dayOfWeek = Carbon::parse($date)->dayOfWeek;
             $schedule  = $this->scheduleRepo->findForDayAndDoctor($doctorId, $dayOfWeek);
 
@@ -83,7 +78,7 @@ class AppointmentService
 
             $data['end_time'] = Carbon::parse($start)->addMinutes($schedule->slot_duration)->format('H:i:s');
 
-            $this->slotsCache($doctorId)->forget($this->slotsCacheKey($doctorId, $date));
+            Cache::forget($this->slotsCacheKey($doctorId, $date));
 
             return $this->appointmentRepo->create($data);
         });
@@ -119,8 +114,8 @@ class AppointmentService
         $data['end_time'] = Carbon::parse($start)->addMinutes($schedule->slot_duration)->format('H:i:s');
 
         $oldDate = Carbon::parse($appointment->appointment_date)->format('Y-m-d');
-        $this->slotsCache($doctorId)->forget($this->slotsCacheKey($doctorId, $oldDate));
-        $this->slotsCache($doctorId)->forget($this->slotsCacheKey($doctorId, $date));
+        Cache::forget($this->slotsCacheKey($doctorId, $oldDate));
+        Cache::forget($this->slotsCacheKey($doctorId, $date));
 
         return $this->appointmentRepo->update($appointment->id, $data);
     }
@@ -129,7 +124,7 @@ class AppointmentService
     {
         $date     = Carbon::parse($appointment->appointment_date)->format('Y-m-d');
         $doctorId = $appointment->doctor_id;
-        $this->slotsCache($doctorId)->forget($this->slotsCacheKey($doctorId, $date));
+        Cache::forget($this->slotsCacheKey($doctorId, $date));
 
         return $this->appointmentRepo->update($appointment->id, [
             'status' => AppointmentStatus::CANCELLED,
