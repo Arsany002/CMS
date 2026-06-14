@@ -104,4 +104,8 @@ class AppointmentRepository
             ->map(fn(string $t) => substr($t, 0, 5))
             ->toArray();
     }
+    public function getStatus(string $id): string
+    {
+        return Appointment::where('id', $id)->value('status');
+    }
 }

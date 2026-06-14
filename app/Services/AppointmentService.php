@@ -87,13 +87,13 @@ class AppointmentService
         return $appointment;
     }
 
-    public function reschedule(Appointment $appointment, array $data): Appointment
+    public function reschedule(array $data): Appointment
     {
-        if ($appointment->status === AppointmentStatus::COMPLETED) {
+        if ($this->appointmentRepo->getStatus($data['id']) === AppointmentStatus::COMPLETED) {
             throw new InvalidAppointmentStateException('A completed appointment cannot be rescheduled.');
         }
 
-        $doctorId = $appointment->doctor_id;
+        $doctorId = $this->appointmentRepo->find($data['id'])->doctor_id;
         $date     = $data['appointment_date'];
         $start    = $data['start_time'];
 
@@ -108,26 +108,26 @@ class AppointmentService
 
         $data['end_time'] = Carbon::parse($start)->addMinutes($schedule->slot_duration)->format('H:i:s');
 
-        $oldDate = Carbon::parse($appointment->appointment_date)->format('Y-m-d');
+        $oldDate = Carbon::parse($this->appointmentRepo->find($data['id'])->appointment_date)->format('Y-m-d');
         Cache::forget($this->slotsCacheKey($doctorId, $oldDate));
         Cache::forget($this->slotsCacheKey($doctorId, $date));
 
-        return $this->appointmentRepo->update($appointment->id, $data);
+        return $this->appointmentRepo->update($data['id'], $data);
     }
 
-    public function cancel(Appointment $appointment): Appointment
+    public function cancel(array $data): Appointment
     {
-        $date     = Carbon::parse($appointment->appointment_date)->format('Y-m-d');
-        $doctorId = $appointment->doctor_id;
+        $date     = Carbon::parse($this->appointmentRepo->find($data['id'])->appointment_date)->format('Y-m-d');
+        $doctorId = $this->appointmentRepo->find($data['id'])->doctor_id;
         Cache::forget($this->slotsCacheKey($doctorId, $date));
 
-        return $this->appointmentRepo->update($appointment->id, [
+        return $this->appointmentRepo->update($data['id'], [
             'status' => AppointmentStatus::CANCELLED,
         ]);
     }
 
-    public function updateStatus(Appointment $appointment, string $status): Appointment
+    public function updateStatus(array $data): Appointment
     {
-        return $this->appointmentRepo->update($appointment->id, ['status' => $status]);
+        return $this->appointmentRepo->update($data['id'], ['status' => $data['status']]);
     }
 }
