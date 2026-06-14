@@ -243,6 +243,30 @@ class AppointmentControllerTest extends ApiTestCase
         $this->assertCount(8, $slots);
     }
 
+    // ─── POST /api/v1/assistant/appointments — conflict ─────────────────────
+
+    public function test_double_booking_returns_409_conflict(): void
+    {
+        $date    = $this->nextMonday->format('Y-m-d');
+        $payload = [
+            'doctor_id'        => $this->doctor->id,
+            'patient_id'       => $this->patient->id,
+            'appointment_date' => $date,
+            'start_time'       => '08:00',
+        ];
+
+        // Arrange / Act (first): first booking succeeds and the slot is consumed
+        $this->postJson('/api/v1/assistant/appointments', $payload)
+            ->assertStatus(201);
+
+        // Act (second): identical slot is no longer in available slots — conflict
+        $response = $this->postJson('/api/v1/assistant/appointments', $payload);
+
+        // Assert: the service throws AppointmentConflictException → 409
+        $response->assertStatus(409)
+            ->assertJson(['success' => false]);
+    }
+
     public function test_available_slots_returns_empty_when_no_schedule_exists(): void
     {
         $doctor = User::factory()->doctor()->forClinic($this->clinic)->create();

@@ -136,6 +136,36 @@ class PrescriptionControllerTest extends ApiTestCase
             ]);
     }
 
+    // ─── GET /api/v1/doctor/prescriptions/{id} — access control ────────────
+
+    public function test_doctor_cannot_view_another_doctors_prescription(): void
+    {
+        // Arrange: a second doctor in the same clinic owns the prescription
+        $otherDoctor = User::factory()->doctor()->forClinic($this->clinic)->create();
+
+        $otherAppointment = Appointment::factory()->create([
+            'clinic_id'  => $this->clinic->id,
+            'doctor_id'  => $otherDoctor->id,
+            'patient_id' => $this->patient->id,
+            'booked_by'  => $this->assistant->id,
+            'status'     => AppointmentStatus::CONFIRMED,
+        ]);
+
+        $prescription = Prescription::factory()->create([
+            'appointment_id' => $otherAppointment->id,
+            'doctor_id'      => $otherDoctor->id,
+            'patient_id'     => $this->patient->id,
+            'clinic_id'      => $this->clinic->id,
+        ]);
+
+        // Act: authenticated doctor (this->doctor) attempts to view the other doctor's prescription
+        $response = $this->getJson("/api/v1/doctor/prescriptions/{$prescription->id}");
+
+        // Assert: horizontal privilege escalation is blocked
+        $response->assertStatus(403)
+            ->assertJson(['success' => false]);
+    }
+
     // ─── PUT /api/v1/doctor/prescriptions/{id} ──────────────────────────────
 
     public function test_doctor_can_update_own_prescription(): void

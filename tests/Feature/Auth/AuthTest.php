@@ -32,6 +32,25 @@ class AuthTest extends ApiTestCase
             ]);
     }
 
+    public function test_login_with_deactivated_account_returns_403(): void
+    {
+        // Arrange: create a user with valid credentials but deactivated status
+        $user = User::factory()->doctor()->inactive()->create([
+            'password' => bcrypt('password123'),
+        ]);
+
+        // Act: attempt login — credentials are valid, but account is inactive
+        $response = $this->postJson('/api/v1/auth/login', [
+            'email'    => $user->email,
+            'password' => 'password123',
+        ]);
+
+        // Assert: AccountDeactivatedException renders 403, not a 401 credential failure
+        $response->assertStatus(403)
+            ->assertJson(['success' => false])
+            ->assertJsonPath('message', 'Your account has been deactivated. Please contact an administrator.');
+    }
+
     public function test_login_response_contains_a_non_empty_bearer_token(): void
     {
         $user = User::factory()->doctor()->create(['password' => bcrypt('secret99')]);

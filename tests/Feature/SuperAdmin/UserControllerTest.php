@@ -70,6 +70,30 @@ class UserControllerTest extends ApiTestCase
         ]);
     }
 
+    public function test_super_admin_cannot_create_duplicate_email(): void
+    {
+        $clinic          = Clinic::factory()->create();
+        $existingEmail   = 'taken@clinic.test';
+
+        // Arrange: a user with the target email already exists
+        User::factory()->doctor()->forClinic($clinic)->create(['email' => $existingEmail]);
+
+        // Act: attempt to create a second user with the same email
+        $response = $this->postJson('/api/v1/super-admin/users', [
+            'clinic_id'             => $clinic->id,
+            'name'                  => 'Duplicate User',
+            'email'                 => $existingEmail,
+            'password'              => 'password123',
+            'password_confirmation' => 'password123',
+            'phone'                 => '0100000099',
+            'role'                  => 'assistant',
+        ]);
+
+        // Assert: unique:users,email rule fires → 422 with an error on the email field
+        $response->assertStatus(422)
+            ->assertJsonValidationErrors(['email']);
+    }
+
     public function test_created_user_is_active_by_default(): void
     {
         $clinic = Clinic::factory()->create();
