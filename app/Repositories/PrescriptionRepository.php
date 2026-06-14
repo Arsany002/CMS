@@ -60,4 +60,9 @@ class PrescriptionRepository
             return $prescription->load('items');
         });
     }
+
+    public function count(): int
+    {
+        return Prescription::count();
+    }
 }

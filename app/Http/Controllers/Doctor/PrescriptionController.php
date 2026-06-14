@@ -7,7 +7,6 @@ use App\Http\Controllers\Controller;
 use App\Http\Requests\Prescription\StorePrescriptionRequest;
 use App\Http\Requests\Prescription\UpdatePrescriptionRequest;
 use App\Http\Resources\PrescriptionResource;
-use App\Models\Appointment;
 use App\Models\Prescription;
 use App\Repositories\PrescriptionRepository;
 use App\Services\PrescriptionService;
@@ -35,16 +34,13 @@ class PrescriptionController extends Controller
 
     public function store(StorePrescriptionRequest $request): JsonResponse
     {
-        $appointment = Appointment::findOrFail($request->appointment_id);
-
-        // Explicitly separate core data from the one-to-many items array
-        $data = $request->only(['appointment_id', 'diagnosis', 'notes']);
+        $data  = $request->only(['appointment_id', 'diagnosis', 'notes']);
         $items = $request->input('items', []);
 
         $prescription = $this->service->create(
             $data,
             $items,
-            $appointment,
+            $request->appointment_id,
             $request->user()->id
         );
 

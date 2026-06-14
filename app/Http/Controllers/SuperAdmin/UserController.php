@@ -92,22 +92,18 @@ class UserController extends Controller
     }
     public function updateRole(Request $request, User $user): JsonResponse
     {
-        // 1. Validate the incoming role
         $validated = $request->validate([
             'role' => ['required', 'string', 'in:super_admin,doctor,assistant'],
         ]);
 
-        // 2. Prevent a Super Admin from accidentally demoting themselves
         if ($request->user()->id === $user->id && $validated['role'] !== 'super_admin') {
             throw new SelfDemotionException();
         }
 
-        // 3. Update the role in the database
-        $user->update(['role' => $validated['role']]);
+        $updated = $this->repo->updateUserRole($user->id, $validated['role']);
 
-        // 4. Return the standard API response
         return $this->success(
-            data: $user,
+            data: new UserResource($updated),
             message: "User role successfully updated to {$validated['role']}."
         );
     }

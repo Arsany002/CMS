@@ -67,4 +67,9 @@ class PatientRepository
             ->when($search, fn($q) => $q->whereFullText(['name', 'phone'], $search))
             ->get();
     }
+
+    public function count(): int
+    {
+        return Patient::count();
+    }
 }

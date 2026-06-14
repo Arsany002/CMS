@@ -13,7 +13,6 @@ class ClinicService
 
     public function toggle(Clinic $clinic): Clinic
     {
-        $clinic->is_active = !$clinic->is_active;
-        return $this->repo->saveClinic($clinic);
+        return $this->repo->toggleActive($clinic);
     }
 }

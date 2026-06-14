@@ -29,43 +29,32 @@ class AuthService
             throw new AccountDeactivatedException();
         }
 
-        // PASSPORT DIFFERENCE 1: Use accessToken instead of plainTextToken
-        $token = $user->createToken('Clinic API Token')->accessToken;
-
         return [
-            'user' => $user,
-            'token' => $token
+            'user'  => $user,
+            'token' => $this->userRepo->createApiToken($user),
         ];
     }
+
     public function register(array $data): array
     {
-        // Hash the password before saving
         $data['password'] = Hash::make($data['password']);
-
-        // Set default active status
         $data['is_active'] = $data['is_active'] ?? true;
 
-        // Assuming your repository has a create method
         $user = $this->userRepo->createUser($data);
 
-        // Generate the Passport token
-        $token = $user->createToken('Clinic API Token')->accessToken;
-
         return [
-            'user' => $user,
-            'token' => $token
+            'user'  => $user,
+            'token' => $this->userRepo->createApiToken($user),
         ];
     }
 
-    /**
-     * Revoke the user's current Passport token.
-     */
     public function logout(User $user): void
     {
-        // PASSPORT DIFFERENCE 2: You access the token instance and call revoke()
-        /** @var \Laravel\Passport\Token|null $token */
-        $token = $user->token();
+        $this->userRepo->revokeCurrentToken($user);
+    }
 
-        $token?->revoke();
+    public function me(string $userId): User
+    {
+        return $this->userRepo->getUserWithClinic($userId);
     }
 }

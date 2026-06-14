@@ -77,4 +77,33 @@ class UserRepository
         $user->save();
         return $user;
     }
+
+    public function updateUserRole(string $id, string $role): User
+    {
+        $user = User::findOrFail($id);
+        $user->update(['role' => $role]);
+        return $user;
+    }
+
+    public function getUserWithClinic(string $id): User
+    {
+        return User::with('clinic')->findOrFail($id);
+    }
+
+    public function createApiToken(User $user): string
+    {
+        return $user->createToken('Clinic API Token')->accessToken;
+    }
+
+    public function revokeCurrentToken(User $user): void
+    {
+        /** @var \Laravel\Passport\Token|null $token */
+        $token = $user->token();
+        $token?->revoke();
+    }
+
+    public function count(): int
+    {
+        return User::count();
+    }
 }

@@ -2,6 +2,7 @@
 
 namespace App\Repositories;
 
+use App\Enums\AppointmentStatus;
 use App\Models\Appointment;
 use Illuminate\Pagination\LengthAwarePaginator;
 
@@ -104,8 +105,18 @@ class AppointmentRepository
             ->map(fn(string $t) => substr($t, 0, 5))
             ->toArray();
     }
-    public function getStatus(string $id): string
+    public function getStatus(string $id): AppointmentStatus
     {
         return Appointment::where('id', $id)->value('status');
+    }
+
+    public function count(): int
+    {
+        return Appointment::count();
+    }
+
+    public function countToday(): int
+    {
+        return Appointment::whereDate('appointment_date', today())->count();
     }
 }

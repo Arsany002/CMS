@@ -77,7 +77,7 @@ class AppointmentController extends Controller
 
     public function update(UpdateAppointmentRequest $request, Appointment $appointment): JsonResponse
     {
-        $updated = $this->service->reschedule($appointment, $request->validated());
+        $updated = $this->service->reschedule(array_merge($request->validated(), ['id' => $appointment->id]));
 
         return $this->success(
             data: new AppointmentResource($updated),
@@ -87,7 +87,7 @@ class AppointmentController extends Controller
 
     public function destroy(Appointment $appointment): JsonResponse
     {
-        $this->service->cancel($appointment);
+        $this->service->cancel(['id' => $appointment->id]);
 
         return $this->success(message: 'Appointment cancelled successfully');
     }

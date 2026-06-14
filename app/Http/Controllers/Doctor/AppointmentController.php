@@ -43,7 +43,7 @@ class AppointmentController extends Controller
     public function updateStatus(UpdateAppointmentStatusRequest $request, string $id): JsonResponse
     {
         $appointment = $this->repo->findForDoctor($id, $request->user()->id);
-        $updated = $this->service->updateStatus($appointment, $request->status);
+        $updated = $this->service->updateStatus(['id' => $appointment->id, 'status' => $request->status]);
 
         return $this->success(
             data: new AppointmentResource($updated),

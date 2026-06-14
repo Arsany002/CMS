@@ -3,12 +3,14 @@
 namespace Tests\Feature\Assistant;
 
 use App\Enums\AppointmentStatus;
+use App\Jobs\SendAppointmentConfirmation;
 use App\Models\Appointment;
 use App\Models\Clinic;
 use App\Models\DoctorSchedule;
 use App\Models\Patient;
 use App\Models\User;
 use Carbon\Carbon;
+use Illuminate\Support\Facades\Queue;
 use Tests\ApiTestCase;
 
 class AppointmentControllerTest extends ApiTestCase
@@ -279,5 +281,81 @@ class AppointmentControllerTest extends ApiTestCase
         )->json('data.slots');
 
         $this->assertEmpty($slots);
+    }
+
+    // ─── Invalid-state guard ────────────────────────────────────────────────
+
+    public function test_cannot_reschedule_a_completed_appointment(): void
+    {
+        $appt = Appointment::factory()->create([
+            'clinic_id'        => $this->clinic->id,
+            'doctor_id'        => $this->doctor->id,
+            'patient_id'       => $this->patient->id,
+            'booked_by'        => $this->assistant->id,
+            'appointment_date' => $this->nextMonday->format('Y-m-d'),
+            'start_time'       => '08:00',
+            'end_time'         => '09:00',
+            'status'           => AppointmentStatus::COMPLETED,
+        ]);
+
+        $response = $this->putJson("/api/v1/assistant/appointments/{$appt->id}", [
+            'appointment_date' => $this->nextMonday->format('Y-m-d'),
+            'start_time'       => '09:00',
+        ]);
+
+        $response->assertStatus(422)
+            ->assertJson(['success' => false]);
+    }
+
+    public function test_rescheduling_to_an_unavailable_slot_returns_409(): void
+    {
+        // 08:00 is already booked; try to reschedule another appointment to it
+        Appointment::factory()->create([
+            'clinic_id'        => $this->clinic->id,
+            'doctor_id'        => $this->doctor->id,
+            'patient_id'       => $this->patient->id,
+            'booked_by'        => $this->assistant->id,
+            'appointment_date' => $this->nextMonday->format('Y-m-d'),
+            'start_time'       => '08:00',
+            'end_time'         => '09:00',
+            'status'           => AppointmentStatus::PENDING,
+        ]);
+
+        $appt = Appointment::factory()->create([
+            'clinic_id'        => $this->clinic->id,
+            'doctor_id'        => $this->doctor->id,
+            'patient_id'       => $this->patient->id,
+            'booked_by'        => $this->assistant->id,
+            'appointment_date' => $this->nextMonday->format('Y-m-d'),
+            'start_time'       => '09:00',
+            'end_time'         => '10:00',
+            'status'           => AppointmentStatus::PENDING,
+        ]);
+
+        $response = $this->putJson("/api/v1/assistant/appointments/{$appt->id}", [
+            'appointment_date' => $this->nextMonday->format('Y-m-d'),
+            'start_time'       => '08:00', // already taken
+        ]);
+
+        $response->assertStatus(409)
+            ->assertJson(['success' => false]);
+    }
+
+    // ─── Queue dispatching ──────────────────────────────────────────────────
+
+    public function test_booking_dispatches_confirmation_job(): void
+    {
+        Queue::fake();
+
+        $this->postJson('/api/v1/assistant/appointments', [
+            'doctor_id'        => $this->doctor->id,
+            'patient_id'       => $this->patient->id,
+            'appointment_date' => $this->nextMonday->format('Y-m-d'),
+            'start_time'       => '08:00',
+        ])->assertStatus(201);
+
+        Queue::assertPushed(SendAppointmentConfirmation::class, function ($job) {
+            return $job->appointment->doctor_id === $this->doctor->id;
+        });
     }
 }

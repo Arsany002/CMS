@@ -56,9 +56,8 @@ class AuthController extends Controller
 
     public function me(Request $request): JsonResponse
     {
-        // Returns the current user wrapped in a resource, eager-loading their clinic
         return $this->success(
-            data: new UserResource($request->user()->load('clinic'))
+            data: new UserResource($this->authService->me($request->user()->id))
         );
     }
 }

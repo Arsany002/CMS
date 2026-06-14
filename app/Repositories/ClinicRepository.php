@@ -39,4 +39,16 @@ class ClinicRepository
         $clinic->save();
         return $clinic;
     }
+
+    public function toggleActive(Clinic $clinic): Clinic
+    {
+        $clinic->is_active = !$clinic->is_active;
+        $clinic->save();
+        return $clinic;
+    }
+
+    public function count(): int
+    {
+        return Clinic::count();
+    }
 }
