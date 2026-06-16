@@ -26,7 +26,7 @@ class StoreUserRequest extends FormRequest
             'clinic_id' => 'required|exists:clinics,id',
             'name' => 'required|string|max:255',
             'email' => 'required|email|max:255|unique:users,email',
-            'password' => 'required|string|min:8|confirmed',
+            'password' => 'required|string|min:8',
             'phone' => 'nullable|string|max:20',
             'role' => 'required|in:super_admin,doctor,assistant',
             //

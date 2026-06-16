@@ -3,18 +3,21 @@
 namespace App\Repositories;
 
 use App\Models\User;
+use Illuminate\Pagination\LengthAwarePaginator;
 
 class UserRepository
 {
-    public function getAllUsers(?string $clinicId = null)
+    public function getAllUsers(?string $clinicId = null, int $perPage = 15): LengthAwarePaginator
     {
-        $query = User::select(['id', 'clinic_id', 'name', 'email', 'phone', 'role', 'is_active', 'created_at']);
+        $query = User::select(['id', 'clinic_id', 'name', 'email', 'phone', 'role', 'is_active', 'created_at'])
+            ->with('clinic:id,name')
+            ->orderBy('name');
 
         if ($clinicId !== null) {
             $query->where('clinic_id', $clinicId);
         }
 
-        return $query->get();
+        return $query->paginate($perPage);
     }
 
     public function getUserById(string $id, ?string $clinicId = null)

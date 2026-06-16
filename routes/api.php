@@ -10,9 +10,13 @@ use App\Http\Controllers\Doctor\PrescriptionController;
 use App\Http\Controllers\Doctor\PatientController as DoctorPatientController;
 use App\Http\Controllers\Assistant\PatientController as AssistantPatientController;
 use App\Http\Controllers\Assistant\AppointmentController as AssistantAppointmentController;
+use App\Http\Controllers\Assistant\DoctorController as AssistantDoctorController;
 use Illuminate\Support\Facades\Route;
 
 Route::prefix('v1')->name('api.v1.')->group(function () {
+    // ─── Public ─────────────────────────────────────────────────────────────────
+    Route::get('public/clinics', [ClinicController::class, 'publicIndex']);
+
     // ─── Auth ───────────────────────────────────────────────────────────────────
     Route::prefix('auth')->middleware('throttle:auth')->group(function () {
         Route::post('login', [AuthController::class, 'login']);
@@ -63,5 +67,7 @@ Route::prefix('v1')->name('api.v1.')->group(function () {
         Route::delete('appointments/{appointment}', [AssistantAppointmentController::class, 'destroy']);
 
         Route::get('available-slots', [AssistantAppointmentController::class, 'availableSlots']);
+
+        Route::get('doctors', [AssistantDoctorController::class, 'index']);
     });
 });

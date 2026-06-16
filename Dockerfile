@@ -20,8 +20,7 @@ COPY . .
 RUN npm run build
 
 # ─── Stage 3: Production image ───────────────────────────────────────────────
-FROM php:8.3-fpm-alpine AS production
-
+FROM php:8.4-fpm-alpine AS production
 # Install system dependencies
 RUN apk add --no-cache \
     nginx \
@@ -61,7 +60,8 @@ COPY --from=node-build      /app/public/build /var/www/html/public/build
 
 # Fix permissions
 RUN chown -R www-data:www-data /var/www/html/storage /var/www/html/bootstrap/cache \
-    && chmod -R 775 /var/www/html/storage /var/www/html/bootstrap/cache
+    && chmod -R 775 /var/www/html/storage /var/www/html/bootstrap/cache \
+    && find /var/www/html/storage -name "*.key" -exec chmod 600 {} \;
 
 EXPOSE 80
 

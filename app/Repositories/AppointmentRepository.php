@@ -16,8 +16,8 @@ class AppointmentRepository
                 'bookedBy:id,name',
             ])
             ->where('doctor_id', $doctorId)
-            ->when(isset($filters['date']), fn($q) => $q->whereDate('appointment_date', $filters['date']))
-            ->when(isset($filters['status']), fn($q) => $q->where('status', $filters['status']))
+            ->when(!empty($filters['date']),   fn($q) => $q->whereDate('appointment_date', $filters['date']))
+            ->when(!empty($filters['status']), fn($q) => $q->where('status', $filters['status']))
             ->paginate($perPage);
     }
 
@@ -30,8 +30,8 @@ class AppointmentRepository
                 'bookedBy:id,name',
             ])
             ->where('clinic_id', $clinicId)
-            ->when(isset($filters['date']), fn($q) => $q->whereDate('appointment_date', $filters['date']))
-            ->when(isset($filters['status']), fn($q) => $q->where('status', $filters['status']))
+            ->when(!empty($filters['date']),   fn($q) => $q->whereDate('appointment_date', $filters['date']))
+            ->when(!empty($filters['status']), fn($q) => $q->where('status', $filters['status']))
             ->paginate($perPage);
     }
 
@@ -43,10 +43,10 @@ class AppointmentRepository
                 'doctor:id,name',
                 'clinic:id,name',
             ])
-            ->when(isset($filters['clinic_id']), fn($q) => $q->where('clinic_id', $filters['clinic_id']))
-            ->when(isset($filters['doctor_id']), fn($q) => $q->where('doctor_id', $filters['doctor_id']))
-            ->when(isset($filters['status']), fn($q) => $q->where('status', $filters['status']))
-            ->when(isset($filters['date']), fn($q) => $q->whereDate('appointment_date', $filters['date']))
+            ->when(!empty($filters['clinic_id']), fn($q) => $q->where('clinic_id', $filters['clinic_id']))
+            ->when(!empty($filters['doctor_id']), fn($q) => $q->where('doctor_id', $filters['doctor_id']))
+            ->when(!empty($filters['status']),    fn($q) => $q->where('status', $filters['status']))
+            ->when(!empty($filters['date']),      fn($q) => $q->whereDate('appointment_date', $filters['date']))
             ->paginate($perPage);
     }
 

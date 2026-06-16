@@ -28,11 +28,13 @@ class AppointmentController extends Controller
 
     public function index(Request $request): JsonResponse
     {
-        // Fixed truncation: Default to today's date if not provided
-        $filters = array_merge(
-            ['date' => today()->format('Y-m-d')],
-            $request->only(['status', 'date'])
-        );
+        // Default to today; respect an explicit non-empty date param from the frontend.
+        // An empty string (cleared filter) intentionally shows all dates.
+        $dateParam = $request->query('date');
+        $filters   = [
+            'date'   => (isset($dateParam) && $dateParam !== '') ? $dateParam : today()->format('Y-m-d'),
+            'status' => $request->query('status', ''),
+        ];
 
         // Security Update: Use the authenticated assistant's clinic_id
         $clinicId = $request->user()->clinic_id;

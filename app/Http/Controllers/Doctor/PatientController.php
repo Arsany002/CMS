@@ -20,7 +20,7 @@ class PatientController extends Controller
     {
         $patients = $this->repo->allForClinic(
             $request->clinic_id,
-            $request->query('search'),
+            $request->query('search') ?: null,
         );
 
         return $this->success(PatientResource::collection($patients));

@@ -12,6 +12,10 @@ php artisan route:cache
 php artisan view:cache
 php artisan event:cache
 
+# Generate Passport keys if missing, then enforce 600 permissions
+php artisan passport:keys --no-interaction --quiet || true
+find /var/www/html/storage -name "*.key" -exec chmod 600 {} \; 2>/dev/null || true
+
 # Create storage symlink
 php artisan storage:link --quiet || true
 

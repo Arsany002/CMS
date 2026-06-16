@@ -28,6 +28,11 @@ class ClinicController extends Controller
         );
     }
 
+    public function publicIndex(): JsonResponse
+    {
+        return $this->success(data: $this->repo->getActiveClinics());
+    }
+
     public function store(StoreClinicRequest $request): JsonResponse
     {
         $clinic = $this->repo->createClinic($request->validated());

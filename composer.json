@@ -74,7 +74,14 @@
     },
     "extra": {
         "laravel": {
-            "dont-discover": []
+            "dont-discover": [
+                "barryvdh/laravel-ide-helper",
+                "laravel/telescope",
+                "laravel/pail",
+                "laravel/pao",
+                "laravel/sentinel",
+                "nunomaduro/collision"
+            ]
         }
     },
     "config": {

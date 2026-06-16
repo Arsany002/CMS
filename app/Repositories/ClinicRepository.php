@@ -3,13 +3,13 @@
 namespace App\Repositories;
 
 use App\Models\Clinic;
-use Illuminate\Database\Eloquent\Collection;
+use Illuminate\Pagination\LengthAwarePaginator;
 
 class ClinicRepository
 {
-    public function getAllClinics(): Collection
+    public function getAllClinics(int $perPage = 15): LengthAwarePaginator
     {
-        return Clinic::all();
+        return Clinic::orderBy('name')->paginate($perPage);
     }
 
     public function getClinicById(int|string $id): Clinic
@@ -45,6 +45,11 @@ class ClinicRepository
         $clinic->is_active = !$clinic->is_active;
         $clinic->save();
         return $clinic;
+    }
+
+    public function getActiveClinics(): \Illuminate\Database\Eloquent\Collection
+    {
+        return Clinic::where('is_active', true)->orderBy('name')->get(['id', 'name']);
     }
 
     public function count(): int
