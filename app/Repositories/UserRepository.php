@@ -2,7 +2,9 @@
 
 namespace App\Repositories;
 
+use App\Enums\UserRole;
 use App\Models\User;
+use Illuminate\Database\Eloquent\Collection;
 use Illuminate\Pagination\LengthAwarePaginator;
 
 class UserRepository
@@ -103,6 +105,16 @@ class UserRepository
         /** @var \Laravel\Passport\Token|null $token */
         $token = $user->token();
         $token?->revoke();
+    }
+
+    public function getDoctorsForClinic(string $clinicId): Collection
+    {
+        return User::where('clinic_id', $clinicId)
+            ->where('role', UserRole::DOCTOR)
+            ->where('is_active', true)
+            ->select(['id', 'name', 'email', 'role'])
+            ->orderBy('name')
+            ->get();
     }
 
     public function count(): int

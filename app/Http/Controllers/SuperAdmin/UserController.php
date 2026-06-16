@@ -2,44 +2,33 @@
 
 namespace App\Http\Controllers\SuperAdmin;
 
-use App\Exceptions\SelfDemotionException;
 use App\Http\Controllers\Controller;
 use App\Http\Requests\User\StoreUserRequest;
+use App\Http\Requests\User\UpdateUserRoleRequest;
 use App\Http\Requests\User\updateUserRequest;
 use App\Http\Resources\UserResource;
-use App\Models\User;
-use App\Repositories\UserRepository;
+use App\Services\UserService;
 use App\Traits\ApiResponse;
 use Illuminate\Http\JsonResponse;
-use Illuminate\Http\Request;
 
 class UserController extends Controller
 {
     use ApiResponse;
 
-    public function __construct(private UserRepository $repo) {}
+    public function __construct(
+        private UserService $service,
+    ) {}
 
-    /**
-     * List all users, optionally scoped to a clinic.
-     */
     public function index(): JsonResponse
     {
         return $this->success(
-            data: UserResource::collection($this->repo->getAllUsers())
+            data: UserResource::collection($this->service->paginate())
         );
     }
 
-    /**
-     * Create a new user (doctor or assistant) and assign them to a clinic.
-     */
     public function store(StoreUserRequest $request): JsonResponse
     {
-        $data = array_merge($request->validated(), [
-            'password'  => bcrypt($request->password),
-            'is_active' => true,
-        ]);
-
-        $user = $this->repo->createUser($data);
+        $user = $this->service->create($request->validated());
 
         return $this->success(
             data: new UserResource($user),
@@ -48,29 +37,16 @@ class UserController extends Controller
         );
     }
 
-    /**
-     * Show a single user by ID.
-     */
-    public function show(User $user): JsonResponse
+    public function show(string $user): JsonResponse
     {
         return $this->success(
-            data: new UserResource($this->repo->getUserById($user->id))
+            data: new UserResource($this->service->findById($user))
         );
     }
 
-    /**
-     * Update an existing user's details.
-     */
-    public function update(updateUserRequest $request, User $user): JsonResponse
+    public function update(updateUserRequest $request, string $user): JsonResponse
     {
-        $data = $request->validated();
-
-        // Only re-hash the password if a new one was explicitly provided
-        if (!empty($data['password'])) {
-            $data['password'] = bcrypt($data['password']);
-        }
-
-        $updated = $this->repo->updateUser($user->id, $data);
+        $updated = $this->service->update($user, $request->validated());
 
         return $this->success(
             data: new UserResource($updated),
@@ -78,33 +54,23 @@ class UserController extends Controller
         );
     }
 
-    /**
-     * Toggle a user's active/inactive status.
-     */
-    public function toggle(User $user): JsonResponse
+    public function toggle(string $user): JsonResponse
     {
-        $updated = $this->repo->toggleUserStatus($user->id);
+        $updated = $this->service->toggleStatus($user);
 
         return $this->success(
             data: new UserResource($updated),
             message: 'User status toggled successfully'
         );
     }
-    public function updateRole(Request $request, User $user): JsonResponse
+
+    public function updateRole(UpdateUserRoleRequest $request, string $user): JsonResponse
     {
-        $validated = $request->validate([
-            'role' => ['required', 'string', 'in:super_admin,doctor,assistant'],
-        ]);
-
-        if ($request->user()->id === $user->id && $validated['role'] !== 'super_admin') {
-            throw new SelfDemotionException();
-        }
-
-        $updated = $this->repo->updateUserRole($user->id, $validated['role']);
+        $updated = $this->service->updateRole($request->user()->id, $user, $request->validated('role'));
 
         return $this->success(
             data: new UserResource($updated),
-            message: "User role successfully updated to {$validated['role']}."
+            message: "User role successfully updated to {$updated->role->value}."
         );
     }
 }

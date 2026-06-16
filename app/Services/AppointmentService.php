@@ -4,10 +4,12 @@ namespace App\Services;
 
 use App\Enums\AppointmentStatus;
 use App\Exceptions\AppointmentConflictException;
+use App\Exceptions\ClinicScopeViolationException;
 use App\Exceptions\InvalidAppointmentStateException;
 use App\Jobs\SendAppointmentConfirmation;
 use App\Models\Appointment;
 use App\Repositories\AppointmentRepository;
+use App\Repositories\PatientRepository;
 use App\Repositories\ScheduleRepository;
 use Carbon\Carbon;
 use Illuminate\Support\Facades\Cache;
@@ -17,6 +19,7 @@ class AppointmentService
     public function __construct(
         private AppointmentRepository $appointmentRepo,
         private ScheduleRepository $scheduleRepo,
+        private PatientRepository $patientRepo,
     ) {}
 
     private function slotsCacheKey(string $doctorId, string $date): string
@@ -57,8 +60,19 @@ class AppointmentService
         });
     }
 
+    /**
+     * Book a new appointment.
+     *
+     * BR-07: The patient must belong to the same clinic as the booking assistant.
+     */
     public function book(array $data): Appointment
     {
+        // BR-07: patient must belong to the same clinic
+        $patient = $this->patientRepo->getPatientById($data['patient_id']);
+        if ($patient->clinic_id !== $data['clinic_id']) {
+            throw new ClinicScopeViolationException('Patient does not belong to this clinic.');
+        }
+
         $doctorId = $data['doctor_id'];
         $date     = $data['appointment_date'];
         $start    = $data['start_time'];
@@ -89,11 +103,15 @@ class AppointmentService
 
     public function reschedule(array $data): Appointment
     {
-        if ($this->appointmentRepo->getStatus($data['id']) === AppointmentStatus::COMPLETED) {
+        // Single DB hit — reuse the loaded model throughout the method
+        $appointment = $this->appointmentRepo->find($data['id']);
+
+        if ($appointment->status === AppointmentStatus::COMPLETED) {
             throw new InvalidAppointmentStateException('A completed appointment cannot be rescheduled.');
         }
 
-        $doctorId = $this->appointmentRepo->find($data['id'])->doctor_id;
+        $doctorId = $appointment->doctor_id;
+        $oldDate  = Carbon::parse($appointment->appointment_date)->format('Y-m-d');
         $date     = $data['appointment_date'];
         $start    = $data['start_time'];
 
@@ -103,12 +121,10 @@ class AppointmentService
             throw new AppointmentConflictException();
         }
 
-        $dayOfWeek = Carbon::parse($date)->dayOfWeek;
-        $schedule  = $this->scheduleRepo->findForDayAndDoctor($doctorId, $dayOfWeek);
-
+        $dayOfWeek        = Carbon::parse($date)->dayOfWeek;
+        $schedule         = $this->scheduleRepo->findForDayAndDoctor($doctorId, $dayOfWeek);
         $data['end_time'] = Carbon::parse($start)->addMinutes($schedule->slot_duration)->format('H:i:s');
 
-        $oldDate = Carbon::parse($this->appointmentRepo->find($data['id'])->appointment_date)->format('Y-m-d');
         Cache::forget($this->slotsCacheKey($doctorId, $oldDate));
         Cache::forget($this->slotsCacheKey($doctorId, $date));
 
@@ -117,8 +133,11 @@ class AppointmentService
 
     public function cancel(array $data): Appointment
     {
-        $date     = Carbon::parse($this->appointmentRepo->find($data['id'])->appointment_date)->format('Y-m-d');
-        $doctorId = $this->appointmentRepo->find($data['id'])->doctor_id;
+        // Single DB hit — no need to call find() twice
+        $appointment = $this->appointmentRepo->find($data['id']);
+        $date        = Carbon::parse($appointment->appointment_date)->format('Y-m-d');
+        $doctorId    = $appointment->doctor_id;
+
         Cache::forget($this->slotsCacheKey($doctorId, $date));
 
         return $this->appointmentRepo->update($data['id'], [

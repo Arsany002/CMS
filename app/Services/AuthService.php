@@ -5,6 +5,7 @@ namespace App\Services;
 use App\Exceptions\AccountDeactivatedException;
 use App\Models\User;
 use App\Repositories\UserRepository;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Validation\ValidationException;
 
@@ -37,15 +38,17 @@ class AuthService
 
     public function register(array $data): array
     {
-        $data['password'] = Hash::make($data['password']);
-        $data['is_active'] = $data['is_active'] ?? true;
+        return DB::transaction(function () use ($data): array {
+            $data['password'] = Hash::make($data['password']);
+            $data['is_active'] = $data['is_active'] ?? true;
 
-        $user = $this->userRepo->createUser($data);
+            $user = $this->userRepo->createUser($data);
 
-        return [
-            'user'  => $user,
-            'token' => $this->userRepo->createApiToken($user),
-        ];
+            return [
+                'user'  => $user,
+                'token' => $this->userRepo->createApiToken($user),
+            ];
+        });
     }
 
     public function logout(User $user): void

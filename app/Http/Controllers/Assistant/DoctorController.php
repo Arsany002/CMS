@@ -2,17 +2,18 @@
 
 namespace App\Http\Controllers\Assistant;
 
-use App\Enums\UserRole;
 use App\Http\Controllers\Controller;
 use App\Http\Resources\UserResource;
+use App\Repositories\UserRepository;
 use App\Traits\ApiResponse;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
-use App\Models\User;
 
 class DoctorController extends Controller
 {
     use ApiResponse;
+
+    public function __construct(private UserRepository $userRepo) {}
 
     /**
      * Return all active doctors belonging to the assistant's clinic.
@@ -20,12 +21,7 @@ class DoctorController extends Controller
      */
     public function index(Request $request): JsonResponse
     {
-        $doctors = User::where('clinic_id', $request->user()->clinic_id)
-            ->where('role', UserRole::DOCTOR)
-            ->where('is_active', true)
-            ->select(['id', 'name', 'email', 'role'])
-            ->orderBy('name')
-            ->get();
+        $doctors = $this->userRepo->getDoctorsForClinic($request->user()->clinic_id);
 
         return $this->success(data: UserResource::collection($doctors));
     }

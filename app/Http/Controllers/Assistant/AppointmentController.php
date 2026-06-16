@@ -2,7 +2,6 @@
 
 namespace App\Http\Controllers\Assistant;
 
-use App\Exceptions\ClinicScopeViolationException;
 use App\Http\Controllers\Controller;
 use App\Http\Requests\Appointment\AvailableSlotsRequest;
 use App\Http\Requests\Appointment\StoreAppointmentRequest;
@@ -10,7 +9,6 @@ use App\Http\Requests\Appointment\UpdateAppointmentRequest;
 use App\Http\Resources\AppointmentResource;
 use App\Models\Appointment;
 use App\Repositories\AppointmentRepository;
-use App\Repositories\PatientRepository;
 use App\Services\AppointmentService;
 use App\Traits\ApiResponse;
 use Illuminate\Http\JsonResponse;
@@ -23,43 +21,32 @@ class AppointmentController extends Controller
     public function __construct(
         private AppointmentRepository $repo,
         private AppointmentService $service,
-        private PatientRepository $patientRepo
     ) {}
 
     public function index(Request $request): JsonResponse
     {
-        // Default to today; respect an explicit non-empty date param from the frontend.
-        // An empty string (cleared filter) intentionally shows all dates.
+        // Default to today; an empty string clears the date filter (shows all).
         $dateParam = $request->query('date');
         $filters   = [
             'date'   => (isset($dateParam) && $dateParam !== '') ? $dateParam : today()->format('Y-m-d'),
             'status' => $request->query('status', ''),
         ];
 
-        // Security Update: Use the authenticated assistant's clinic_id
-        $clinicId = $request->user()->clinic_id;
-        $appointments = $this->repo->allForClinic($clinicId, $filters);
+        $appointments = $this->repo->allForClinic($request->user()->clinic_id, $filters);
 
         return $this->success(
             data: AppointmentResource::collection($appointments)
         );
     }
 
-   
     public function store(StoreAppointmentRequest $request): JsonResponse
     {
-        // BR-07: Patient must belong to the same clinic (using Repository pattern)
-        $patient = $this->patientRepo->getPatientById($request->patient_id);
-
-        if ($patient->clinic_id !== $request->user()->clinic_id) {
-            throw new ClinicScopeViolationException('Patient does not belong to this clinic.');
-        }
-
         $data = array_merge($request->validated(), [
             'clinic_id' => $request->user()->clinic_id,
             'booked_by' => $request->user()->id,
         ]);
 
+        // BR-07 (patient belongs to this clinic) is enforced inside AppointmentService::book()
         $appointment = $this->service->book($data);
 
         return $this->success(
@@ -71,7 +58,6 @@ class AppointmentController extends Controller
 
     public function show(Appointment $appointment): JsonResponse
     {
-        // Fixed truncation
         return $this->success(
             data: new AppointmentResource($this->repo->find($appointment->id))
         );
