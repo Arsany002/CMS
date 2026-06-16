@@ -28,6 +28,14 @@ class ClinicRepository
         return $clinic;
     }
 
+    public function updateClinicById(string $id, array $data): Clinic
+    {
+        $clinic = $this->getClinicById($id);
+        $clinic->update($data);
+
+        return $clinic;
+    }
+
     public function deleteClinic(Clinic $clinic): bool
     {
         $clinic->delete();
@@ -45,6 +53,11 @@ class ClinicRepository
         $clinic->is_active = !$clinic->is_active;
         $clinic->save();
         return $clinic;
+    }
+
+    public function toggleActiveById(string $id): Clinic
+    {
+        return $this->toggleActive($this->getClinicById($id));
     }
 
     public function getActiveClinics(): \Illuminate\Database\Eloquent\Collection

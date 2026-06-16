@@ -2,6 +2,7 @@
 
 namespace Database\Seeders;
 
+use Illuminate\Support\Facades\DB;
 use Illuminate\Database\Seeder;
 use Laravel\Passport\ClientRepository;
 
@@ -9,16 +10,24 @@ class PassportClientSeeder extends Seeder
 {
     public function run(): void
     {
+        $existingClient = DB::table('oauth_clients')
+            ->where('revoked', false)
+            ->where('grant_types', 'like', '%personal_access%')
+            ->first();
+
+        if ($existingClient) {
+            $this->command?->info("Passport personal access client already exists: {$existingClient->id}");
+
+            return;
+        }
+
         $repository = app(ClientRepository::class);
 
-        // USING THE NEW METHOD NAME FOR PASSPORT V12+
         $client = $repository->createPersonalAccessGrantClient(
-            'Clinic API Personal Client',
+            'CMS API',
             null
         );
 
-        $this->command->info("Client ID: " . $client->id);
-        $this->command->info("Client Secret: " . $client->plainSecret);
-        $this->command->info("Copy these into your .env file!");
+        $this->command?->info("Created Passport personal access client: {$client->id}");
     }
 }

@@ -4,7 +4,7 @@ namespace App\Http\Controllers\Assistant;
 
 use App\Http\Controllers\Controller;
 use App\Http\Resources\UserResource;
-use App\Repositories\UserRepository;
+use App\Services\UserService;
 use App\Traits\ApiResponse;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -13,7 +13,7 @@ class DoctorController extends Controller
 {
     use ApiResponse;
 
-    public function __construct(private UserRepository $userRepo) {}
+    public function __construct(private UserService $userService) {}
 
     /**
      * Return all active doctors belonging to the assistant's clinic.
@@ -21,7 +21,7 @@ class DoctorController extends Controller
      */
     public function index(Request $request): JsonResponse
     {
-        $doctors = $this->userRepo->getDoctorsForClinic($request->user()->clinic_id);
+        $doctors = $this->userService->getDoctorsForClinic($request->user()->clinic_id);
 
         return $this->success(data: UserResource::collection($doctors));
     }

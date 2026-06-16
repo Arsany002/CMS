@@ -5,8 +5,7 @@ namespace App\Http\Controllers\Doctor;
 use App\Http\Controllers\Controller;
 use App\Http\Requests\Schedule\StoreScheduleRequest;
 use App\Http\Resources\ScheduleResource;
-use App\Models\DoctorSchedule;
-use App\Repositories\ScheduleRepository;
+use App\Services\ScheduleService;
 use App\Traits\ApiResponse;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -15,11 +14,11 @@ class ScheduleController extends Controller
 {
     use ApiResponse;
 
-    public function __construct(private ScheduleRepository $repo) {}
+    public function __construct(private ScheduleService $service) {}
 
     public function index(Request $request): JsonResponse
     {
-        $schedules = $this->repo->allForDoctor($request->user()->id);
+        $schedules = $this->service->allForDoctor($request->user()->id);
 
         return $this->success(
             data: ScheduleResource::collection($schedules)
@@ -28,13 +27,11 @@ class ScheduleController extends Controller
 
     public function store(StoreScheduleRequest $request): JsonResponse
     {
-        $data = array_merge($request->validated(), [
-            'doctor_id' => $request->user()->id,
-            'clinic_id' => $request->user()->clinic_id,
-            'is_active' => true,
-        ]);
-
-        $schedule = $this->repo->create($data);
+        $schedule = $this->service->createForDoctor(
+            $request->validated(),
+            $request->user()->id,
+            $request->user()->clinic_id
+        );
 
         return $this->success(
             data: new ScheduleResource($schedule),
@@ -43,20 +40,16 @@ class ScheduleController extends Controller
         );
     }
 
-    public function show(Request $request, DoctorSchedule $schedule): JsonResponse
+    public function show(Request $request, string $schedule): JsonResponse
     {
-        abort_if($schedule->doctor_id !== $request->user()->id, 403, 'You do not own this schedule.');
-
         return $this->success(
-            data: new ScheduleResource($schedule)
+            data: new ScheduleResource($this->service->findForDoctor($schedule, $request->user()->id))
         );
     }
 
-    public function update(StoreScheduleRequest $request, DoctorSchedule $schedule): JsonResponse
+    public function update(StoreScheduleRequest $request, string $schedule): JsonResponse
     {
-        abort_if($schedule->doctor_id !== $request->user()->id, 403, 'You do not own this schedule.');
-
-        $updated = $this->repo->update($schedule, $request->validated());
+        $updated = $this->service->updateForDoctor($schedule, $request->user()->id, $request->validated());
 
         return $this->success(
             data: new ScheduleResource($updated),
@@ -64,11 +57,9 @@ class ScheduleController extends Controller
         );
     }
 
-    public function destroy(Request $request, DoctorSchedule $schedule): JsonResponse
+    public function destroy(Request $request, string $schedule): JsonResponse
     {
-        abort_if($schedule->doctor_id !== $request->user()->id, 403, 'You do not own this schedule.');
-
-        $this->repo->delete($schedule);
+        $this->service->deleteForDoctor($schedule, $request->user()->id);
 
         return $this->success(message: 'Schedule deleted successfully');
     }

@@ -2,13 +2,10 @@
 
 namespace App\Http\Controllers\Doctor;
 
-use App\Exceptions\ClinicScopeViolationException;
 use App\Http\Controllers\Controller;
 use App\Http\Requests\Prescription\StorePrescriptionRequest;
 use App\Http\Requests\Prescription\UpdatePrescriptionRequest;
 use App\Http\Resources\PrescriptionResource;
-use App\Models\Prescription;
-use App\Repositories\PrescriptionRepository;
 use App\Services\PrescriptionService;
 use App\Traits\ApiResponse;
 use Illuminate\Http\JsonResponse;
@@ -19,7 +16,6 @@ class PrescriptionController extends Controller
     use ApiResponse;
 
     public function __construct(
-        private PrescriptionRepository $repo,
         private PrescriptionService $service
     ) {}
 
@@ -27,7 +23,7 @@ class PrescriptionController extends Controller
     {
         return $this->success(
             data: PrescriptionResource::collection(
-                $this->repo->allForDoctor($request->user()->id)
+                $this->service->allForDoctor($request->user()->id)
             )
         );
     }
@@ -51,29 +47,19 @@ class PrescriptionController extends Controller
         );
     }
 
-    public function show(Request $request, Prescription $prescription): JsonResponse
+    public function show(Request $request, string $prescription): JsonResponse
     {
-        if ($prescription->doctor_id !== $request->user()->id) {
-            throw new ClinicScopeViolationException('You do not have access to this prescription.');
-        }
-
         return $this->success(
-            data: new PrescriptionResource($this->repo->find($prescription->id))
+            data: new PrescriptionResource($this->service->findForDoctor($prescription, $request->user()->id))
         );
     }
 
-    public function update(UpdatePrescriptionRequest $request, Prescription $prescription): JsonResponse
+    public function update(UpdatePrescriptionRequest $request, string $prescription): JsonResponse
     {
-        if ($prescription->doctor_id !== $request->user()->id) {
-            throw new ClinicScopeViolationException('You do not have access to this prescription.');
-        }
-
-        // Missing Data Added: Extract the items array to pass to the service
         $data = $request->only(['diagnosis', 'notes']);
         $items = $request->input('items', []);
 
-        // Fixed truncated method call
-        $updated = $this->service->update($prescription, $data, $items);
+        $updated = $this->service->updateForDoctor($prescription, $request->user()->id, $data, $items);
 
         return $this->success(
             data: new PrescriptionResource($updated),

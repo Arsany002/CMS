@@ -13,6 +13,7 @@ use App\Repositories\PatientRepository;
 use App\Repositories\ScheduleRepository;
 use Carbon\Carbon;
 use Illuminate\Support\Facades\Cache;
+use Illuminate\Pagination\LengthAwarePaginator;
 
 class AppointmentService
 {
@@ -25,6 +26,26 @@ class AppointmentService
     private function slotsCacheKey(string $doctorId, string $date): string
     {
         return "slots:{$doctorId}:{$date}";
+    }
+
+    public function allForClinic(string $clinicId, array $filters = []): LengthAwarePaginator
+    {
+        return $this->appointmentRepo->allForClinic($clinicId, $filters);
+    }
+
+    public function allForDoctor(string $doctorId, array $filters = []): LengthAwarePaginator
+    {
+        return $this->appointmentRepo->allForDoctor($doctorId, $filters);
+    }
+
+    public function find(string $id): Appointment
+    {
+        return $this->appointmentRepo->find($id);
+    }
+
+    public function findForDoctor(string $id, string $doctorId): Appointment
+    {
+        return $this->appointmentRepo->findForDoctor($id, $doctorId);
     }
 
     public function getAvailableSlots(string $doctorId, string $date): array
@@ -148,5 +169,12 @@ class AppointmentService
     public function updateStatus(array $data): Appointment
     {
         return $this->appointmentRepo->update($data['id'], ['status' => $data['status']]);
+    }
+
+    public function updateStatusForDoctor(string $id, string $doctorId, string|AppointmentStatus $status): Appointment
+    {
+        $appointment = $this->appointmentRepo->findForDoctor($id, $doctorId);
+
+        return $this->updateStatus(['id' => $appointment->id, 'status' => $status]);
     }
 }

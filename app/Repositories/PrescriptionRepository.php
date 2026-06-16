@@ -42,6 +42,18 @@ class PrescriptionRepository
             ->findOrFail($id);
     }
 
+    public function findForDoctor(string $id, string $doctorId): Prescription
+    {
+        return Prescription::select(['id', 'appointment_id', 'doctor_id', 'patient_id', 'clinic_id', 'diagnosis', 'notes', 'created_at'])
+            ->with([
+                'patient:id,name,phone',
+                'items:id,prescription_id,medicine_name,dosage,frequency,duration,notes',
+                'appointment:id,appointment_date,start_time,status',
+            ])
+            ->where('doctor_id', $doctorId)
+            ->findOrFail($id);
+    }
+
     public function create(array $data, array $items): Prescription
     {
         return DB::transaction(function () use ($data, $items) {
@@ -59,6 +71,13 @@ class PrescriptionRepository
             $prescription->items()->createMany($items);
             return $prescription->load('items');
         });
+    }
+
+    public function updateForDoctor(string $id, string $doctorId, array $data, array $items): Prescription
+    {
+        $prescription = $this->findForDoctor($id, $doctorId);
+
+        return $this->update($prescription, $data, $items);
     }
 
     public function count(): int

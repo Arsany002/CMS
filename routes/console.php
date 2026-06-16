@@ -4,10 +4,51 @@ use Illuminate\Foundation\Inspiring;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\DB;
 use Symfony\Component\Console\Command\Command;
+use Database\Seeders\PassportClientSeeder;
 
 Artisan::command('inspire', function () {
     $this->comment(Inspiring::quote());
 })->purpose('Display an inspiring quote');
+
+Artisan::command('cms:local-setup', function (): int {
+    if (! app()->environment(['local', 'testing'])) {
+        $this->error('Refusing to run local setup outside local/testing environments.');
+
+        return Command::FAILURE;
+    }
+
+    $this->info('Running migrations...');
+    Artisan::call('migrate', ['--force' => true]);
+    $this->output->write(Artisan::output());
+
+    $privateKey = storage_path('oauth-private.key');
+    $publicKey = storage_path('oauth-public.key');
+
+    if (! file_exists($privateKey) || ! file_exists($publicKey)) {
+        $this->info('Generating Passport keys...');
+        Artisan::call('passport:keys', ['--no-interaction' => true]);
+        $this->output->write(Artisan::output());
+    } else {
+        $this->info('Passport keys already exist.');
+    }
+
+    foreach ([$privateKey, $publicKey] as $keyPath) {
+        if (file_exists($keyPath)) {
+            @chmod($keyPath, 0600);
+        }
+    }
+
+    $this->info('Ensuring Passport personal access client exists...');
+    Artisan::call('db:seed', [
+        '--class' => PassportClientSeeder::class,
+        '--force' => true,
+    ]);
+    $this->output->write(Artisan::output());
+
+    $this->info('Local CMS setup complete. You can now run: php artisan serve --host=127.0.0.1 --port=8001');
+
+    return Command::SUCCESS;
+})->purpose('Prepare local/testing CMS auth dependencies for manual development');
 
 Artisan::command('cms:cleanup-test-data', function (): int {
     if (! app()->environment(['local', 'testing'])) {

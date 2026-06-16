@@ -7,6 +7,28 @@
 <a href="https://packagist.org/packages/laravel/framework"><img src="https://img.shields.io/packagist/l/laravel/framework" alt="License"></a>
 </p>
 
+## Local CMS Development
+
+Run this once after cloning the project, after a database reset, or any time Passport tables/keys are missing:
+
+```bash
+php artisan cms:local-setup
+```
+
+That command is guarded to `APP_ENV=local` or `APP_ENV=testing`. It runs migrations, creates Passport keys only when missing, fixes key permissions, and ensures a Passport personal access client exists without creating duplicates.
+
+After that, normal manual testing only needs the local servers:
+
+```bash
+# Backend
+php artisan serve --host=127.0.0.1 --port=8001
+
+# Frontend, from ../CMS-FRONT
+npm run dev -- --host 127.0.0.1 --port 5174
+```
+
+You do not need to run `passport:client` every time. Run `php artisan cms:local-setup` again only after rebuilding/resetting the local database, deleting Passport keys, or seeing `Personal access client not found`.
+
 ## About Laravel
 
 Laravel is a web application framework with expressive, elegant syntax. We believe development must be an enjoyable and creative experience to be truly fulfilling. Laravel takes the pain out of development by easing common tasks used in many web projects, such as:

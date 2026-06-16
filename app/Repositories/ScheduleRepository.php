@@ -25,6 +25,13 @@ class ScheduleRepository
         return DoctorSchedule::findOrFail($id);
     }
 
+    public function findForDoctor(string $id, string $doctorId): DoctorSchedule
+    {
+        return DoctorSchedule::where('id', $id)
+            ->where('doctor_id', $doctorId)
+            ->firstOrFail();
+    }
+
     /**
      * Create a new schedule entry.
      */
@@ -43,12 +50,25 @@ class ScheduleRepository
         return $schedule;
     }
 
+    public function updateForDoctor(string $id, string $doctorId, array $data): DoctorSchedule
+    {
+        $schedule = $this->findForDoctor($id, $doctorId);
+        $schedule->update($data);
+
+        return $schedule;
+    }
+
     /**
      * Delete a schedule entry.
      */
     public function delete(DoctorSchedule $schedule): void
     {
         $schedule->delete();
+    }
+
+    public function deleteForDoctor(string $id, string $doctorId): void
+    {
+        $this->findForDoctor($id, $doctorId)->delete();
     }
 
     /**

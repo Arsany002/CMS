@@ -7,8 +7,6 @@ use App\Http\Requests\Appointment\AvailableSlotsRequest;
 use App\Http\Requests\Appointment\StoreAppointmentRequest;
 use App\Http\Requests\Appointment\UpdateAppointmentRequest;
 use App\Http\Resources\AppointmentResource;
-use App\Models\Appointment;
-use App\Repositories\AppointmentRepository;
 use App\Services\AppointmentService;
 use App\Traits\ApiResponse;
 use Illuminate\Http\JsonResponse;
@@ -19,7 +17,6 @@ class AppointmentController extends Controller
     use ApiResponse;
 
     public function __construct(
-        private AppointmentRepository $repo,
         private AppointmentService $service,
     ) {}
 
@@ -32,7 +29,7 @@ class AppointmentController extends Controller
             'status' => $request->query('status', ''),
         ];
 
-        $appointments = $this->repo->allForClinic($request->user()->clinic_id, $filters);
+        $appointments = $this->service->allForClinic($request->user()->clinic_id, $filters);
 
         return $this->success(
             data: AppointmentResource::collection($appointments)
@@ -56,16 +53,16 @@ class AppointmentController extends Controller
         );
     }
 
-    public function show(Appointment $appointment): JsonResponse
+    public function show(string $appointment): JsonResponse
     {
         return $this->success(
-            data: new AppointmentResource($this->repo->find($appointment->id))
+            data: new AppointmentResource($this->service->find($appointment))
         );
     }
 
-    public function update(UpdateAppointmentRequest $request, Appointment $appointment): JsonResponse
+    public function update(UpdateAppointmentRequest $request, string $appointment): JsonResponse
     {
-        $updated = $this->service->reschedule(array_merge($request->validated(), ['id' => $appointment->id]));
+        $updated = $this->service->reschedule(array_merge($request->validated(), ['id' => $appointment]));
 
         return $this->success(
             data: new AppointmentResource($updated),
@@ -73,9 +70,9 @@ class AppointmentController extends Controller
         );
     }
 
-    public function destroy(Appointment $appointment): JsonResponse
+    public function destroy(string $appointment): JsonResponse
     {
-        $this->service->cancel(['id' => $appointment->id]);
+        $this->service->cancel(['id' => $appointment]);
 
         return $this->success(message: 'Appointment cancelled successfully');
     }

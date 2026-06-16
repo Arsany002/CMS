@@ -5,7 +5,6 @@ namespace App\Http\Controllers\Doctor;
 use App\Http\Controllers\Controller;
 use App\Http\Requests\Appointment\UpdateAppointmentStatusRequest;
 use App\Http\Resources\AppointmentResource;
-use App\Repositories\AppointmentRepository;
 use App\Services\AppointmentService;
 use App\Traits\ApiResponse;
 use Illuminate\Http\JsonResponse;
@@ -16,7 +15,6 @@ class AppointmentController extends Controller
     use ApiResponse;
 
     public function __construct(
-        private AppointmentRepository $repo,
         private AppointmentService $service
     ) {}
 
@@ -24,7 +22,7 @@ class AppointmentController extends Controller
     {
         $filters = $request->only(['date', 'status']);
 
-        $appointments = $this->repo->allForDoctor($request->user()->id, $filters);
+        $appointments = $this->service->allForDoctor($request->user()->id, $filters);
 
         return $this->success(
             data: AppointmentResource::collection($appointments)
@@ -33,7 +31,7 @@ class AppointmentController extends Controller
 
     public function show(Request $request, string $id): JsonResponse
     {
-        $appointment = $this->repo->findForDoctor($id, $request->user()->id);
+        $appointment = $this->service->findForDoctor($id, $request->user()->id);
 
         return $this->success(
             data: new AppointmentResource($appointment)
@@ -42,8 +40,7 @@ class AppointmentController extends Controller
 
     public function updateStatus(UpdateAppointmentStatusRequest $request, string $id): JsonResponse
     {
-        $appointment = $this->repo->findForDoctor($id, $request->user()->id);
-        $updated = $this->service->updateStatus(['id' => $appointment->id, 'status' => $request->status]);
+        $updated = $this->service->updateStatusForDoctor($id, $request->user()->id, $request->status);
 
         return $this->success(
             data: new AppointmentResource($updated),

@@ -8,6 +8,7 @@ use App\Exceptions\InvalidAppointmentStateException;
 use App\Models\Prescription;
 use App\Repositories\AppointmentRepository;
 use App\Repositories\PrescriptionRepository;
+use Illuminate\Pagination\LengthAwarePaginator;
 
 class PrescriptionService
 {
@@ -15,6 +16,11 @@ class PrescriptionService
         private PrescriptionRepository $repo,
         private AppointmentRepository $appointmentRepo,
     ) {}
+
+    public function allForDoctor(string $doctorId): LengthAwarePaginator
+    {
+        return $this->repo->allForDoctor($doctorId);
+    }
 
     public function create(array $data, array $items, string $appointmentId, string $doctorId): Prescription
     {
@@ -39,6 +45,24 @@ class PrescriptionService
 
     public function update(Prescription $prescription, array $data, array $items): Prescription
     {
+        return $this->repo->update($prescription, $data, $items);
+    }
+
+    public function findForDoctor(string $id, string $doctorId): Prescription
+    {
+        $prescription = $this->repo->find($id);
+
+        if ($prescription->doctor_id !== $doctorId) {
+            throw new ClinicScopeViolationException('You do not have access to this prescription.');
+        }
+
+        return $prescription;
+    }
+
+    public function updateForDoctor(string $id, string $doctorId, array $data, array $items): Prescription
+    {
+        $prescription = $this->findForDoctor($id, $doctorId);
+
         return $this->repo->update($prescription, $data, $items);
     }
 }

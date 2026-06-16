@@ -5,6 +5,7 @@ namespace App\Services;
 use App\Exceptions\SelfDemotionException;
 use App\Models\User;
 use App\Repositories\UserRepository;
+use Illuminate\Database\Eloquent\Collection;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Pagination\LengthAwarePaginator;
 
@@ -20,6 +21,11 @@ class UserService
     public function findById(string $id, ?string $clinicId = null): User
     {
         return $this->repo->getUserById($id, $clinicId);
+    }
+
+    public function getDoctorsForClinic(string $clinicId): Collection
+    {
+        return $this->repo->getDoctorsForClinic($clinicId);
     }
 
     /**
