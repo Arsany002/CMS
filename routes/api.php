@@ -11,9 +11,17 @@ use App\Http\Controllers\Doctor\PatientController as DoctorPatientController;
 use App\Http\Controllers\Assistant\PatientController as AssistantPatientController;
 use App\Http\Controllers\Assistant\AppointmentController as AssistantAppointmentController;
 use App\Http\Controllers\Assistant\DoctorController as AssistantDoctorController;
+use App\Http\Controllers\Testing\TestingController;
 use Illuminate\Support\Facades\Route;
 
 Route::prefix('v1')->name('api.v1.')->group(function () {
+    // ─── Testing helpers (local / testing only) ──────────────────────────────────
+    if (app()->environment(['local', 'testing'])) {
+        Route::prefix('testing')->group(function () {
+            Route::post('google-exchange-seed', [TestingController::class, 'seedGoogleExchangeCode']);
+        });
+    }
+
     // ─── Public ─────────────────────────────────────────────────────────────────
     Route::get('public/clinics', [ClinicController::class, 'publicIndex']);
 
@@ -21,6 +29,11 @@ Route::prefix('v1')->name('api.v1.')->group(function () {
     Route::prefix('auth')->middleware('throttle:auth')->group(function () {
         Route::post('login', [AuthController::class, 'login']);
         Route::post('register', [AuthController::class, 'register']);
+
+        // Google OAuth — stateless; no session middleware needed
+        Route::get('google/redirect',  [AuthController::class, 'googleRedirect']);
+        Route::get('google/callback',  [AuthController::class, 'googleCallback']);
+        Route::post('google/exchange', [AuthController::class, 'googleExchange']);
 
         Route::middleware(['auth:api', 'throttle:api'])->group(function () {
             Route::post('logout', [AuthController::class, 'logout']);

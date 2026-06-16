@@ -117,6 +117,17 @@ class UserRepository
             ->get();
     }
 
+    public function findByGoogleId(string $googleId): ?User
+    {
+        return User::where('google_id', $googleId)->first();
+    }
+
+    public function linkGoogleAccount(User $user, string $googleId, ?string $avatar): User
+    {
+        $user->update(['google_id' => $googleId, 'avatar' => $avatar]);
+        return $user->fresh();
+    }
+
     public function count(): int
     {
         return User::count();
