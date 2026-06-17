@@ -9,25 +9,78 @@
 
 ## Local CMS Development
 
-Run this once after cloning the project, after a database reset, or any time Passport tables/keys are missing:
+### First-time setup (fresh clone or new machine)
 
 ```bash
-php artisan cms:local-setup
+cd CMS-BACK
+cp .env.example .env     # set DB_DATABASE, DB_USERNAME, DB_PASSWORD
+php artisan key:generate
+composer dev             # setup + server in one command
 ```
 
-That command is guarded to `APP_ENV=local` or `APP_ENV=testing`. It runs migrations, creates Passport keys only when missing, fixes key permissions, and ensures a Passport personal access client exists without creating duplicates.
-
-After that, normal manual testing only needs the local servers:
+### Normal day
 
 ```bash
-# Backend
-php artisan serve --host=127.0.0.1 --port=8001
-
-# Frontend, from ../CMS-FRONT
-npm run dev -- --host 127.0.0.1 --port 5174
+cd CMS-BACK
+composer dev
 ```
 
-You do not need to run `passport:client` every time. Run `php artisan cms:local-setup` again only after rebuilding/resetting the local database, deleting Passport keys, or seeing `Personal access client not found`.
+Backend is ready at `http://127.0.0.1:8001/api/v1`.
+
+Frontend (separate terminal, from `CMS-FRONT/`):
+
+```bash
+npm run dev -- --port 5174
+```
+
+### After a database reset (`migrate:fresh`)
+
+```bash
+php artisan migrate:fresh
+composer dev
+```
+
+`composer dev` re-runs setup automatically — keys are reused, client and super admin are recreated.
+
+### Available commands
+
+| Command | What it does |
+|---|---|
+| `composer dev` | Setup + start server (one command for normal use) |
+| `composer local:setup` | Setup only (migrations, keys, client, admin) — no server |
+| `php artisan cms:dev` | Same as `composer dev` |
+| `php artisan cms:local-setup` | Same as `composer local:setup` |
+
+### What `cms:local-setup` does
+
+| Step | Behaviour |
+|---|---|
+| Environment guard | Refuses to run outside `local` / `testing` |
+| Migrations | Runs `migrate` (no-op if up to date) |
+| Passport keys | Generates only if `storage/oauth-*.key` are missing; **never forces** |
+| Key permissions | Sets both keys to `chmod 600` |
+| Passport client | Idempotent — creates one personal-access client if none exists |
+| Super admin | `updateOrCreate` — never duplicates the account |
+| Output | Prints masked credentials then hands off to `serve` |
+
+### Super admin login
+
+| Field    | Value |
+|---|---|
+| Email    | `arsany.ayman02@gmail.com` |
+| Password | *(see `database/seeders/SuperAdminSeeder.php`)* |
+| Role     | `super_admin` |
+
+### Passport key management
+
+> **Never run `php artisan passport:keys --force` as part of normal development.**
+> That flag regenerates the RSA key pair, which **immediately invalidates every
+> existing token** for all users and clients. Only run it intentionally when
+> rotating keys (e.g. a key has been compromised).
+
+Keys live on the filesystem (`storage/oauth-*.key`) and are gitignored.
+Passport clients live in the database (`oauth_clients` table).
+They are independent: resetting the database removes clients but leaves keys intact.
 
 ## About Laravel
 

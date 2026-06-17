@@ -5,6 +5,7 @@ use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\DB;
 use Symfony\Component\Console\Command\Command;
 use Database\Seeders\PassportClientSeeder;
+use Database\Seeders\SuperAdminSeeder;
 
 Artisan::command('inspire', function () {
     $this->comment(Inspiring::quote());
@@ -45,10 +46,64 @@ Artisan::command('cms:local-setup', function (): int {
     ]);
     $this->output->write(Artisan::output());
 
-    $this->info('Local CMS setup complete. You can now run: php artisan serve --host=127.0.0.1 --port=8001');
+    $this->info('Seeding super admin account...');
+    Artisan::call('db:seed', [
+        '--class' => SuperAdminSeeder::class,
+        '--force' => true,
+    ]);
+    $this->output->write(Artisan::output());
+
+    $separator = str_repeat('─', 52);
+    $this->info('');
+    $this->line("<info>{$separator}</info>");
+    $this->line('<info> Local CMS setup complete.</info>');
+    $this->line("<info>{$separator}</info>");
+    $this->line(' Super admin credentials:');
+    $this->line('   Email    : arsany.ayman02@gmail.com');
+    $this->line('   Password : ••••••••••  (see SuperAdminSeeder)');
+    $this->line('   Role     : super_admin');
+    $this->line('');
+    $this->line(' Start the backend:');
+    $this->line('   php artisan serve --host=127.0.0.1 --port=8001');
+    $this->line('');
+    $this->line(' Start the frontend (CMS-FRONT/):');
+    $this->line('   npm run dev -- --port 5174');
+    $this->line("<info>{$separator}</info>");
+    $this->line('');
+    $this->line(' ⚠  Do NOT run passport:keys --force unless intentionally');
+    $this->line('    rotating keys. Doing so invalidates all existing tokens.');
+    $this->line("<info>{$separator}</info>");
 
     return Command::SUCCESS;
 })->purpose('Prepare local/testing CMS auth dependencies for manual development');
+
+Artisan::command('cms:dev', function (): int {
+    if (! app()->environment(['local', 'testing'])) {
+        $this->error('Refusing to start dev server outside local/testing environments.');
+
+        return Command::FAILURE;
+    }
+
+    $result = $this->call('cms:local-setup');
+
+    if ($result !== Command::SUCCESS) {
+        return $result;
+    }
+
+    $separator = str_repeat('─', 52);
+    $this->line('');
+    $this->line("<info>{$separator}</info>");
+    $this->line('<info> Backend development server starting...</info>');
+    $this->line('<info>   http://127.0.0.1:8001/api/v1</info>');
+    $this->line('<info>   Press Ctrl+C to stop.</info>');
+    $this->line("<info>{$separator}</info>");
+    $this->line('');
+
+    return $this->call('serve', [
+        '--host' => '127.0.0.1',
+        '--port' => '8001',
+    ]);
+})->purpose('Bootstrap local auth dependencies and start the development server on 127.0.0.1:8001');
 
 Artisan::command('cms:cleanup-test-data', function (): int {
     if (! app()->environment(['local', 'testing'])) {

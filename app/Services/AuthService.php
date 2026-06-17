@@ -13,6 +13,7 @@ use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Str;
 use Illuminate\Validation\ValidationException;
 use Laravel\Socialite\Facades\Socialite;
+use Laravel\Socialite\Two\AbstractProvider as SocialiteProvider;
 use Symfony\Component\HttpFoundation\RedirectResponse;
 
 class AuthService
@@ -89,7 +90,10 @@ class AuthService
             now()->addMinutes(10)
         );
 
-        return Socialite::driver('google')
+        /** @var SocialiteProvider $driver */
+        $driver = Socialite::driver('google');
+
+        return $driver
             ->stateless()
             ->with(['state' => $stateKey])
             ->redirect();
@@ -111,7 +115,9 @@ class AuthService
             throw new \RuntimeException('OAuth state is invalid or has expired.');
         }
 
-        $googleUser = Socialite::driver('google')->stateless()->user();
+        /** @var SocialiteProvider $driver */
+        $driver = Socialite::driver('google');
+        $googleUser = $driver->stateless()->user();
 
         $user = DB::transaction(function () use ($googleUser, $context) {
             // 1. Match by google_id first (most reliable)
