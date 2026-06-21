@@ -9,20 +9,47 @@
 
 ## Local CMS Development
 
+### Daily local development without clearing database
+
+```bash
+# Backend daily start, preserves database
+cd CMS-BACK
+composer serve:local
+
+# Frontend daily start
+cd ../CMS-FRONT
+npm run dev -- --host 127.0.0.1 --port 5174
+```
+
+`composer serve:local` only starts `php artisan serve --host=127.0.0.1 --port=8001`. It does not run migrations, seeders, Passport setup, `cms:local-setup`, or `cms:dev`.
+
+Do not run `composer local:setup` every time. Run it only after first clone/setup, after an intentional DB reset, if Passport keys/client are missing, if the super admin is missing, or if no active clinic exists.
+
+Before assuming local data is gone, run:
+
+```bash
+php artisan cms:local-db-status
+```
+
+This read-only command prints the database connection, users count, super admin count, clinics count, active clinics count, and Passport personal access client status.
+
+Do not run `migrate:fresh` unless you intentionally want to erase local database data.
+
 ### First-time setup (fresh clone or new machine)
 
 ```bash
 cd CMS-BACK
 cp .env.example .env     # set DB_DATABASE, DB_USERNAME, DB_PASSWORD
 php artisan key:generate
-composer dev             # setup + server in one command
+composer local:setup     # explicit setup/repair only
+composer serve:local     # server only
 ```
 
 ### Normal day
 
 ```bash
 cd CMS-BACK
-composer dev
+composer serve:local
 ```
 
 Backend is ready at `http://127.0.0.1:8001/api/v1`.
@@ -37,18 +64,20 @@ npm run dev -- --port 5174
 
 ```bash
 php artisan migrate:fresh
-composer dev
+composer local:setup
+composer serve:local
 ```
 
-`composer dev` re-runs setup automatically — keys are reused, client and super admin are recreated.
+`composer dev` is now a data-preserving daily start alias for `composer serve:local`.
 
 ### Available commands
 
 | Command | What it does |
 |---|---|
-| `composer dev` | Setup + start server (one command for normal use) |
-| `composer local:setup` | Setup only (migrations, keys, client, admin) — no server |
-| `php artisan cms:dev` | Same as `composer dev` |
+| `composer dev` | Start server only; preserves database |
+| `composer serve:local` | Start server only; preserves database |
+| `composer local:setup` | Setup only (migrations, keys, client, admin, demo clinic) — no server |
+| `php artisan cms:dev` | Start server only; preserves database |
 | `php artisan cms:local-setup` | Same as `composer local:setup` |
 
 ### What `cms:local-setup` does
@@ -61,7 +90,10 @@ composer dev
 | Key permissions | Sets both keys to `chmod 600` |
 | Passport client | Idempotent — creates one personal-access client if none exists |
 | Super admin | `updateOrCreate` — never duplicates the account |
+| Demo clinic | Creates/reactivates `Demo Clinic` only when no active clinic exists |
 | Output | Prints masked credentials then hands off to `serve` |
+
+`php artisan cms:local-setup` is idempotent and does not wipe local users or clinics. Run it after first setup, after an intentional DB reset, when the registration clinic dropdown is empty, or when Passport reports a missing personal access client.
 
 ### Super admin login
 

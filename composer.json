@@ -22,7 +22,7 @@
         "laravel/pint": "^1.27",
         "laravel/telescope": "^5.20",
         "mockery/mockery": "^1.6",
-        "nunomaduro/collision": "^8.6",
+        "nunomaduro/collision": "^8.9",
         "phpunit/phpunit": "^12.5.12"
     },
     "autoload": {
@@ -48,7 +48,10 @@
         ],
         "dev": [
             "Composer\\Config::disableProcessTimeout",
-            "@php artisan cms:dev"
+            "@serve:local"
+        ],
+        "serve:local": [
+            "@php artisan serve --host=127.0.0.1 --port=8001"
         ],
         "local:setup": [
             "@php artisan cms:local-setup"

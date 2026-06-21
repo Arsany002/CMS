@@ -1,11 +1,12 @@
 <?php
 
+use Database\Seeders\LocalClinicSeeder;
+use Database\Seeders\PassportClientSeeder;
+use Database\Seeders\SuperAdminSeeder;
 use Illuminate\Foundation\Inspiring;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\DB;
 use Symfony\Component\Console\Command\Command;
-use Database\Seeders\PassportClientSeeder;
-use Database\Seeders\SuperAdminSeeder;
 
 Artisan::command('inspire', function () {
     $this->comment(Inspiring::quote());
@@ -53,6 +54,13 @@ Artisan::command('cms:local-setup', function (): int {
     ]);
     $this->output->write(Artisan::output());
 
+    $this->info('Ensuring local demo clinic exists...');
+    Artisan::call('db:seed', [
+        '--class' => LocalClinicSeeder::class,
+        '--force' => true,
+    ]);
+    $this->output->write(Artisan::output());
+
     $separator = str_repeat('─', 52);
     $this->info('');
     $this->line("<info>{$separator}</info>");
@@ -62,6 +70,10 @@ Artisan::command('cms:local-setup', function (): int {
     $this->line('   Email    : arsany.ayman02@gmail.com');
     $this->line('   Password : ••••••••••  (see SuperAdminSeeder)');
     $this->line('   Role     : super_admin');
+    $this->line('');
+    $this->line(' Local registration clinic:');
+    $this->line('   Name     : ' . LocalClinicSeeder::NAME);
+    $this->line('   Status   : active');
     $this->line('');
     $this->line(' Start the backend:');
     $this->line('   php artisan serve --host=127.0.0.1 --port=8001');
@@ -84,12 +96,6 @@ Artisan::command('cms:dev', function (): int {
         return Command::FAILURE;
     }
 
-    $result = $this->call('cms:local-setup');
-
-    if ($result !== Command::SUCCESS) {
-        return $result;
-    }
-
     $separator = str_repeat('─', 52);
     $this->line('');
     $this->line("<info>{$separator}</info>");
@@ -103,7 +109,31 @@ Artisan::command('cms:dev', function (): int {
         '--host' => '127.0.0.1',
         '--port' => '8001',
     ]);
-})->purpose('Bootstrap local auth dependencies and start the development server on 127.0.0.1:8001');
+})->purpose('Start the local development server on 127.0.0.1:8001 without running setup');
+
+Artisan::command('cms:local-db-status', function (): int {
+    $default = config('database.default');
+    $connection = config("database.connections.{$default}", []);
+
+    $personalAccessClientExists = DB::table('oauth_clients')
+        ->where('revoked', false)
+        ->where('grant_types', 'like', '%personal_access%')
+        ->exists();
+
+    $this->line('Local CMS database status');
+    $this->line('APP_ENV: ' . app()->environment());
+    $this->line('DB_CONNECTION: ' . $default);
+    $this->line('DB_HOST: ' . ($connection['host'] ?? 'n/a'));
+    $this->line('DB_PORT: ' . ($connection['port'] ?? 'n/a'));
+    $this->line('DB_DATABASE: ' . ($connection['database'] ?? 'n/a'));
+    $this->line('users count: ' . \App\Models\User::count());
+    $this->line('super admin count: ' . \App\Models\User::where('role', 'super_admin')->count());
+    $this->line('clinics count: ' . \App\Models\Clinic::count());
+    $this->line('active clinics count: ' . \App\Models\Clinic::where('is_active', true)->count());
+    $this->line('Passport personal access client exists: ' . ($personalAccessClientExists ? 'yes' : 'no'));
+
+    return Command::SUCCESS;
+})->purpose('Show read-only local database identity and setup counts');
 
 Artisan::command('cms:cleanup-test-data', function (): int {
     if (! app()->environment(['local', 'testing'])) {

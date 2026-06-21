@@ -10,10 +10,10 @@ class SuperAdminSeeder extends Seeder
 {
     public function run(): void
     {
-        // updateOrCreate is idempotent — safe to run multiple times.
-        // The 'hashed' cast on User::$password auto-hashes the plain-text
-        // value; do NOT wrap it in Hash::make() or the hash will be doubled.
-        User::updateOrCreate(
+        // firstOrCreate is idempotent and preserves any local changes made to
+        // an existing account. The 'hashed' cast auto-hashes the plain-text
+        // password when a new account is created.
+        $user = User::firstOrCreate(
             ['email' => 'arsany.ayman02@gmail.com'],
             [
                 'name'      => 'Arsany Ayman',
@@ -24,6 +24,10 @@ class SuperAdminSeeder extends Seeder
             ]
         );
 
-        $this->command?->info('Super admin seeded: arsany.ayman02@gmail.com');
+        $message = $user->wasRecentlyCreated
+            ? 'Super admin created: arsany.ayman02@gmail.com'
+            : 'Super admin already exists: arsany.ayman02@gmail.com';
+
+        $this->command?->info($message);
     }
 }
