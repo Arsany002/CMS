@@ -25,6 +25,8 @@ class Appointment extends Model
         'end_time',
         'status',
         'notes',
+        'email_reminded_at',
+        'app_reminded_at',
     ];
 
     protected $attributes = [
@@ -32,8 +34,10 @@ class Appointment extends Model
     ];
 
     protected $casts = [
-        'appointment_date' => 'date',
-        'status'           => AppointmentStatus::class,
+        'appointment_date'  => 'date',
+        'status'            => AppointmentStatus::class,
+        'email_reminded_at' => 'datetime',
+        'app_reminded_at'   => 'datetime',
     ];
 
     public function clinic(): BelongsTo

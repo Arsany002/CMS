@@ -119,4 +119,16 @@ class AppointmentRepository
     {
         return Appointment::whereDate('appointment_date', today())->count();
     }
+
+    public function getUpcomingForReminders(int $withinMinutes, string $reminderColumn): \Illuminate\Database\Eloquent\Collection
+    {
+        return Appointment::with(['doctor:id,name,email', 'patient:id,name'])
+            ->whereIn('status', ['pending', 'confirmed'])
+            ->whereNull($reminderColumn)
+            ->whereRaw(
+                'ADDTIME(appointment_date, start_time) BETWEEN ? AND ?',
+                [now()->toDateTimeString(), now()->addMinutes($withinMinutes)->toDateTimeString()]
+            )
+            ->get();
+    }
 }

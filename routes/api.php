@@ -11,6 +11,7 @@ use App\Http\Controllers\Doctor\PatientController as DoctorPatientController;
 use App\Http\Controllers\Assistant\PatientController as AssistantPatientController;
 use App\Http\Controllers\Assistant\AppointmentController as AssistantAppointmentController;
 use App\Http\Controllers\Assistant\DoctorController as AssistantDoctorController;
+use App\Http\Controllers\NotificationController;
 use App\Http\Controllers\Testing\TestingController;
 use Illuminate\Support\Facades\Route;
 
@@ -21,6 +22,11 @@ Route::prefix('v1')->name('api.v1.')->group(function () {
             Route::post('google-exchange-seed', [TestingController::class, 'seedGoogleExchangeCode']);
         });
     }
+        Route::prefix('auth/google')->group(function () {
+            Route::get('/redirect', [AuthController::class, 'googleRedirect']);
+            Route::get('/callback', [AuthController::class, 'googleCallback']);
+            Route::post('/exchange', [AuthController::class, 'googleExchange']);
+        });
 
     // ─── Public ─────────────────────────────────────────────────────────────────
     Route::get('public/clinics', [ClinicController::class, 'publicIndex']);
@@ -39,6 +45,14 @@ Route::prefix('v1')->name('api.v1.')->group(function () {
             Route::post('logout', [AuthController::class, 'logout']);
             Route::get('me', [AuthController::class, 'me']);
         });
+    });
+
+    // ─── Notifications (all authenticated roles) ─────────────────────────────────
+    Route::middleware(['auth:api', 'throttle:api'])->prefix('notifications')->group(function () {
+        Route::get('/',           [NotificationController::class, 'index']);
+        Route::get('/unread-count', [NotificationController::class, 'unreadCount']);
+        Route::patch('/read-all', [NotificationController::class, 'markAllAsRead']);
+        Route::patch('/{id}/read', [NotificationController::class, 'markAsRead']);
     });
 
     // ─── Super Admin ─────────────────────────────────────────────────────────────

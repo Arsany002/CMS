@@ -5,6 +5,7 @@ namespace App\Repositories;
 use App\Enums\UserRole;
 use App\Models\User;
 use Illuminate\Database\Eloquent\Collection;
+use Illuminate\Notifications\DatabaseNotification;
 use Illuminate\Pagination\LengthAwarePaginator;
 
 class UserRepository
@@ -131,5 +132,33 @@ class UserRepository
     public function count(): int
     {
         return User::count();
+    }
+
+    public function paginateNotifications(User $user, int $perPage = 15): LengthAwarePaginator
+    {
+        return $user->notifications()->paginate($perPage);
+    }
+
+    public function unreadNotificationCount(User $user): int
+    {
+        return $user->unreadNotifications()->count();
+    }
+
+    public function markNotificationAsRead(User $user, string $id): ?DatabaseNotification
+    {
+        $notification = $user->notifications()->find($id);
+
+        if (! $notification) {
+            return null;
+        }
+
+        $notification->markAsRead();
+
+        return $notification;
+    }
+
+    public function markAllNotificationsAsRead(User $user): void
+    {
+        $user->unreadNotifications()->update(['read_at' => now()]);
     }
 }

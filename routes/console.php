@@ -3,9 +3,12 @@
 use Database\Seeders\LocalClinicSeeder;
 use Database\Seeders\PassportClientSeeder;
 use Database\Seeders\SuperAdminSeeder;
+use App\Notifications\DoctorAppointmentReminder;
+use App\Repositories\AppointmentRepository;
 use Illuminate\Foundation\Inspiring;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Schedule;
 use Symfony\Component\Console\Command\Command;
 
 Artisan::command('inspire', function () {
@@ -266,3 +269,63 @@ Artisan::command('cms:cleanup-test-data', function (): int {
 
     return Command::SUCCESS;
 })->purpose('Safely remove Playwright-owned test data in local/testing only');
+
+Artisan::command('appointments:send-doctor-reminders', function (): int {
+    $repo = app(AppointmentRepository::class);
+
+    // 30-minute email reminders
+    $emailSent    = 0;
+    $emailSkipped = 0;
+
+    foreach ($repo->getUpcomingForReminders(30, 'email_reminded_at') as $appointment) {
+        $doctor = $appointment->doctor;
+
+        if (! $doctor || ! $doctor->email) {
+            $this->warn("[email] Skipped appointment {$appointment->id} — doctor missing or has no email.");
+            $emailSkipped++;
+            continue;
+        }
+
+        try {
+            $doctor->notify(new DoctorAppointmentReminder($appointment->id, ['mail']));
+            $appointment->update(['email_reminded_at' => now()]);
+            $emailSent++;
+        } catch (\Throwable $e) {
+            $this->error("[email] Failed for appointment {$appointment->id}: {$e->getMessage()}");
+            $emailSkipped++;
+        }
+    }
+
+    $this->info("[email] {$emailSent} reminder(s) dispatched, {$emailSkipped} skipped.");
+
+    // 15-minute in-app reminders
+    $appSent    = 0;
+    $appSkipped = 0;
+
+    foreach ($repo->getUpcomingForReminders(15, 'app_reminded_at') as $appointment) {
+        $doctor = $appointment->doctor;
+
+        if (! $doctor) {
+            $this->warn("[in-app] Skipped appointment {$appointment->id} — doctor not found.");
+            $appSkipped++;
+            continue;
+        }
+
+        try {
+            $doctor->notify(new DoctorAppointmentReminder($appointment->id, ['database']));
+            $appointment->update(['app_reminded_at' => now()]);
+            $appSent++;
+        } catch (\Throwable $e) {
+            $this->error("[in-app] Failed for appointment {$appointment->id}: {$e->getMessage()}");
+            $appSkipped++;
+        }
+    }
+
+    $this->info("[in-app] {$appSent} reminder(s) created, {$appSkipped} skipped.");
+
+    return Command::SUCCESS;
+})->purpose('Send 30-min email and 15-min in-app reminders to doctors for upcoming appointments');
+
+Schedule::command('appointments:send-doctor-reminders')
+    ->everyMinute()
+    ->withoutOverlapping();
