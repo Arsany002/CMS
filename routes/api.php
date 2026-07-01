@@ -12,6 +12,7 @@ use App\Http\Controllers\Assistant\PatientController as AssistantPatientControll
 use App\Http\Controllers\Assistant\AppointmentController as AssistantAppointmentController;
 use App\Http\Controllers\Assistant\DoctorController as AssistantDoctorController;
 use App\Http\Controllers\NotificationController;
+use App\Http\Controllers\WhatsappController;
 use App\Http\Controllers\Testing\TestingController;
 use Illuminate\Support\Facades\Route;
 
@@ -45,6 +46,11 @@ Route::prefix('v1')->name('api.v1.')->group(function () {
             Route::post('logout', [AuthController::class, 'logout']);
             Route::get('me', [AuthController::class, 'me']);
         });
+    });
+
+    // ─── WhatsApp (all authenticated roles) ──────────────────────────────────────
+    Route::middleware(['auth:api', 'throttle:api'])->prefix('whatsapp')->group(function () {
+        Route::post('send', [WhatsappController::class, 'send']);
     });
 
     // ─── Notifications (all authenticated roles) ─────────────────────────────────
